@@ -23,7 +23,6 @@ import PAGE_HTML from "./index.html";
 
 interface Env {
   ETAT_METEO: KVNamespace;   // KV : config + dernier état (binding obligatoire)
-  MOT_DE_PASSE: string;      // secret : protège la page et l'API
 }
 
 /** Réglages persistés dans KV. */
@@ -58,10 +57,6 @@ const NTFY_SERVEUR = "https://ntfy.sh";
 const CLE_CONFIG = "config";
 const CLE_ETAT = "dernier_etat";
 const TOPIC_REGEX = /^[A-Za-z0-9_-]+$/; // segments d'URL ntfy : pas d'injection possible
-
-const MAX_TENTATIVES = 5;            // essais ratés autorisés par fenêtre, par IP
-const FENETRE_BLOCAGE_S = 900;       // 15 min
-const PREFIXE_TENTATIVES = "tentatives:";
 
 const CONFIG_DEFAUT: ConfigStockee = {
   latitude: 45.36,            // Saint-Jory-las-Bloux
@@ -205,52 +200,6 @@ async function envoyerNotification(n: Notification, c: Config): Promise<void> {
   }
 }
 
-// ─────────────────────── Authentification ───────────────────────
-
-/** Comparaison à temps constant pour limiter les attaques temporelles. */
-function comparaisonConstante(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
-}
-
-function estAutorise(request: Request, env: Env): boolean {
-  if (!env.MOT_DE_PASSE) return false; // aucun mot de passe configuré -> tout est refusé
-  const entete = request.headers.get("Authorization") ?? "";
-  const fourni = entete.startsWith("Bearer ") ? entete.slice(7) : "";
-  return fourni.length > 0 && comparaisonConstante(fourni, env.MOT_DE_PASSE);
-}
-
-// ─────────────────── Anti-force-brute (par IP, via KV) ───────────────────
-// KV est éventuellement cohérent : limite "souple", suffisante pour un usage perso.
-
-interface Tentatives { n: number; exp: number } // exp = epoch (s) de fin de fenêtre
-
-function adresseClient(request: Request): string {
-  return request.headers.get("CF-Connecting-IP") || "inconnue";
-}
-
-async function lireTentatives(env: Env, ip: string): Promise<Tentatives | null> {
-  const brut = await env.ETAT_METEO.get(PREFIXE_TENTATIVES + ip);
-  if (!brut) return null;
-  try { return JSON.parse(brut) as Tentatives; } catch { return null; }
-}
-
-/** Incrémente le compteur d'échecs et renvoie le nouveau total. */
-async function enregistrerEchec(env: Env, ip: string, actuel: Tentatives | null): Promise<number> {
-  const maintenant = Math.floor(Date.now() / 1000);
-  const exp = actuel && actuel.exp > maintenant ? actuel.exp : maintenant + FENETRE_BLOCAGE_S;
-  const n = (actuel?.n ?? 0) + 1;
-  const ttl = Math.max(60, exp - maintenant); // KV impose un TTL minimal de 60 s
-  await env.ETAT_METEO.put(PREFIXE_TENTATIVES + ip, JSON.stringify({ n, exp }), { expirationTtl: ttl });
-  return n;
-}
-
-async function reinitialiserTentatives(env: Env, ip: string): Promise<void> {
-  await env.ETAT_METEO.delete(PREFIXE_TENTATIVES + ip);
-}
-
 const json = (data: unknown, status = 200): Response => Response.json(data, { status });
 
 // ─────────────────────── Handlers Worker ───────────────────────
@@ -289,31 +238,7 @@ export default {
     }
 
     if (chemin.startsWith("/api/")) {
-      const ip = adresseClient(request);
-      const maintenant = Math.floor(Date.now() / 1000);
-      const tentatives = await lireTentatives(env, ip);
-
-      // Quota dépassé et fenêtre encore active -> on refuse sans vérifier le mot de passe.
-      if (tentatives && tentatives.n >= MAX_TENTATIVES && tentatives.exp > maintenant) {
-        const restant = tentatives.exp - maintenant;
-        return new Response(
-          JSON.stringify({ erreur: `Trop de tentatives. Réessaie dans ${Math.ceil(restant / 60)} min.` }),
-          { status: 429, headers: { "content-type": "application/json", "Retry-After": String(restant) } },
-        );
-      }
-
-      if (!estAutorise(request, env)) {
-        const n = await enregistrerEchec(env, ip, tentatives);
-        const reste = Math.max(0, MAX_TENTATIVES - n);
-        const message = reste === 0
-          ? "Mot de passe invalide. Accès bloqué 15 min."
-          : `Mot de passe invalide. ${reste} tentative${reste > 1 ? "s" : ""} restante${reste > 1 ? "s" : ""}.`;
-        return json({ erreur: message }, 401);
-      }
-
-      // Authentifié : on remet le compteur à zéro.
-      await reinitialiserTentatives(env, ip);
-
+      // Accès libre : pas d'authentification (app perso, mot de passe désactivé).
       if (chemin === "/api/config" && request.method === "GET") {
         const { ntfyServeur, ...stockee } = await lireConfig(env);
         return json(stockee);

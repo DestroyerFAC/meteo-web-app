@@ -25,7 +25,7 @@ Une notification est envoyée **uniquement au changement d'état** (pas de spam)
 
 ```
 meteo-web-app/
-├── worker.ts       # backend : cron + serveur HTTP (page + API) + auth + rate-limit
+├── worker.ts       # backend : cron + serveur HTTP (page + API, accès libre)
 ├── index.html      # page de réglages mobile (importée comme texte par le worker)
 ├── wrangler.toml   # config Cloudflare (cron, KV, règle Text)
 ├── tsconfig.json   # type-check strict
@@ -48,10 +48,7 @@ npx wrangler login
 #    renseigné dans wrangler.toml. Rien à faire ici.
 #    Pour en recréer un toi-même : npx wrangler kv namespace create ETAT_METEO
 
-# 4. Définis le mot de passe (protège ta page de réglages, publique sur le net)
-npx wrangler secret put MOT_DE_PASSE
-
-# 5. Déploie
+# 4. Déploie (l'app est en accès libre, aucun secret à configurer)
 npx wrangler deploy
 ```
 
@@ -64,7 +61,7 @@ Le cron tourne ensuite tout seul côté Cloudflare. URL HTTPS, gratuite, permane
 1. Ouvre l'app **ntfy** sur ton téléphone → abonne-toi à un topic (un nom au
    choix, ex. `aeration-7f3k9z2q` ; choisis-en un peu devinable, c'est ta clé de
    notification).
-2. Ouvre l'URL `workers.dev` → déverrouille avec le mot de passe.
+2. Ouvre l'URL `workers.dev` → la page de réglages s'affiche directement.
 3. Active **« Recevoir des alertes »**, colle le même topic ntfy, règle tes
    seuils, **Enregistre**.
 4. **« Envoyer un test »** → la notification doit arriver sur ton téléphone.
@@ -79,14 +76,13 @@ npm run typecheck   # doit renvoyer zéro erreur
 
 ## Debug de la logique sans attendre la vraie météo
 
-`GET /api/etat?temp=27` (avec l'en-tête `Authorization: Bearer <mot de passe>`)
-renvoie l'état calculé pour une température simulée. Teste 31 / 27 / 23 pour voir
-les trois états.
+`GET /api/etat?temp=27` renvoie l'état calculé pour une température simulée.
+Teste 31 / 27 / 23 pour voir les trois états.
 
-## Pourquoi un mot de passe ?
+## Sécurité : accès libre
 
-L'URL `workers.dev` est **publique** : n'importe qui qui tombe dessus pourrait
-sinon changer tes seuils ou ta position. Le mot de passe (un seul, que tu
-définis à l'étape 4) protège la page et l'API. Tu ne le saisis qu'une fois par
-session sur ton téléphone. Si tu veux vraiment t'en passer un jour, c'est
-faisable, mais déconseillé tant que l'app est exposée sur Internet.
+L'app est volontairement **sans mot de passe** : l'URL `workers.dev` est publique,
+donc quiconque la connaît peut voir et modifier les réglages (seuils, position,
+canal ntfy) et envoyer un test. C'est acceptable pour un usage perso avec une URL
+peu devinable. Pour ré-ajouter une protection plus tard, on peut remettre un
+secret `MOT_DE_PASSE` et une vérification `Authorization: Bearer` dans le worker.
