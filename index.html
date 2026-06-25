@@ -98,13 +98,6 @@
   .actions { margin-top: 24px; display: flex; flex-direction: column; gap: 10px; }
   .mt12 { margin-top: 12px; }
 
-  /* Porte (mot de passe) */
-  .porte { position: fixed; inset: 0; background: var(--ink); display: flex; align-items: center; justify-content: center; padding: 24px; z-index: 10; }
-  .porte .carte { width: 100%; max-width: 360px; margin: 0; }
-  .porte h1 { font-size: 22px; }
-  .porte p { color: var(--muet); font-size: 14px; margin: 8px 0 20px; }
-  .erreur { color: var(--rouge); font-size: 13px; min-height: 18px; margin-top: 10px; }
-
   /* Toast */
   .toast { position: fixed; left: 50%; bottom: 24px; transform: translate(-50%, 16px); background: var(--surface-2); border: 1px solid var(--line); color: var(--texte); padding: 12px 18px; border-radius: 10px; font-size: 14px; opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; z-index: 20; max-width: 90vw; }
   .toast.affiche { opacity: 1; transform: translate(-50%, 0); }
@@ -119,19 +112,7 @@
 </head>
 <body>
 
-<!-- Porte : verrouille tant que le mot de passe n'est pas validé -->
-<div class="porte" id="porte">
-  <div class="carte">
-    <p class="eyebrow">Domaine de chasse</p>
-    <h1>Réglages d'aération</h1>
-    <p>Entre le mot de passe pour accéder à tes réglages.</p>
-    <input type="password" id="mdp" class="mono" autocomplete="current-password" placeholder="Mot de passe" inputmode="text">
-    <div class="erreur" id="porte-erreur" aria-live="polite"></div>
-    <button class="btn btn-primaire mt12" id="deverrouiller">Déverrouiller</button>
-  </div>
-</div>
-
-<main class="wrap" id="appli" hidden>
+<main class="wrap" id="appli">
   <header>
     <p class="eyebrow">Domaine de chasse</p>
     <h1>Aération</h1>
@@ -222,15 +203,11 @@
   "use strict";
   const $ = (id) => document.getElementById(id);
   const TMIN = 10, TMAX = 40;            // bornes de la jauge
-  const cle = "mdp_aeration";
 
   // ── Réseau ────────────────────────────────────────────────
-  const pwd = () => sessionStorage.getItem(cle) || "";
+  // Plus d'authentification : l'API est en accès libre (mot de passe désactivé).
   async function api(chemin, options = {}) {
-    const res = await fetch(chemin, {
-      ...options,
-      headers: { "Authorization": "Bearer " + pwd(), ...(options.headers || {}) },
-    });
+    const res = await fetch(chemin, options);
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       const err = new Error(data.erreur || "Connexion impossible.");
@@ -239,29 +216,6 @@
     }
     return data;
   }
-
-  // ── Porte ─────────────────────────────────────────────────
-  function verrouiller() {
-    sessionStorage.removeItem(cle);
-    $("appli").hidden = true;
-    $("porte").hidden = false;
-  }
-  async function tenterAcces(motDePasse) {
-    sessionStorage.setItem(cle, motDePasse);
-    const c = await api("/api/config");       // 200 = mot de passe correct
-    remplirFormulaire(c);
-    $("porte").hidden = true;
-    $("appli").hidden = false;
-    rafraichirEtat();
-  }
-  $("deverrouiller").addEventListener("click", async () => {
-    const v = $("mdp").value.trim();
-    $("porte-erreur").textContent = "";
-    if (!v) { $("porte-erreur").textContent = "Saisis ton mot de passe."; return; }
-    try { await tenterAcces(v); }
-    catch (e) { $("porte-erreur").textContent = e.message; }
-  });
-  $("mdp").addEventListener("keydown", (e) => { if (e.key === "Enter") $("deverrouiller").click(); });
 
   // ── Formulaire ────────────────────────────────────────────
   function remplirFormulaire(c) {
@@ -293,14 +247,13 @@
       toast("Réglages enregistrés.");
       rafraichirEtat();
     } catch (e) {
-      if (e.statut === 401) verrouiller();
       toast(e.message, "erreur");
     }
   });
 
   $("tester").addEventListener("click", async () => {
     try { await api("/api/test", { method: "POST" }); toast("Notification envoyée."); }
-    catch (e) { if (e.statut === 401) verrouiller(); toast(e.message, "erreur"); }
+    catch (e) { toast(e.message, "erreur"); }
   });
 
   $("geo").addEventListener("click", () => {
@@ -345,7 +298,6 @@
       const e = await api("/api/etat");
       rendreEtat(e);
     } catch (err) {
-      if (err.statut === 401) { verrouiller(); return; }
       $("verdict").textContent = "Météo indisponible";
       $("verdict").dataset.etat = "";
     }
@@ -362,12 +314,10 @@
     toastTimer = setTimeout(() => t.classList.remove("affiche"), 2600);
   }
 
-  // ── Démarrage : reprise de session si possible ────────────
-  if (pwd()) {
-    api("/api/config")
-      .then((c) => { remplirFormulaire(c); $("porte").hidden = true; $("appli").hidden = false; rafraichirEtat(); })
-      .catch(() => verrouiller());
-  }
+  // ── Démarrage : charge directement les réglages (pas d'authentification) ──
+  api("/api/config")
+    .then((c) => { remplirFormulaire(c); rafraichirEtat(); })
+    .catch(() => toast("Chargement des réglages impossible.", "erreur"));
 })();
 </script>
 </body>
