@@ -12,7 +12,7 @@ crons = ["*/15 * * * *"]   # toutes les 15 min (96/jour, large dans le tier grat
 
 [[kv_namespaces]]
 binding = "ETAT_METEO"
-id = "REMPLACE_PAR_TON_ID_KV"
+id = "267251027fe748cd8557215f907cd92c"
 
 # MOT_DE_PASSE : ne pas mettre ici -> secret (voir étape 4 ci-dessous).
 # La position et les seuils se règlent désormais dans la page, pas dans ce fichier.

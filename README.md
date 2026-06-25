@@ -44,10 +44,9 @@ npm install
 # 2. Connexion à Cloudflare
 npx wrangler login
 
-# 3. Crée le namespace KV, puis colle l'id affiché dans wrangler.toml
-#    (remplace REMPLACE_PAR_TON_ID_KV)
-npx wrangler kv namespace create ETAT_METEO
-#   (si ça échoue, ancienne forme : npx wrangler kv:namespace create ETAT_METEO)
+# 3. (déjà fait) Le namespace KV ETAT_METEO existe et son id est déjà
+#    renseigné dans wrangler.toml. Rien à faire ici.
+#    Pour en recréer un toi-même : npx wrangler kv namespace create ETAT_METEO
 
 # 4. Définis le mot de passe (protège ta page de réglages, publique sur le net)
 npx wrangler secret put MOT_DE_PASSE
