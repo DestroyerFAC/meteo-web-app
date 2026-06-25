@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Réglages d'aération</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #0E1512;
+    --surface: #16201B;
+    --surface-2: #1E2A24;
+    --line: #2A3A31;
+    --frais: #57B292;
+    --chaud: #D69A52;
+    --tiede: #C9B98A;
+    --texte: #E9E7DF;
+    --muet: #93A096;
+    --focus: #8FD3BA;
+    --rouge: #D9776A;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--ink);
+    color: var(--texte);
+    font-family: "IBM Plex Sans", system-ui, sans-serif;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+  }
+  .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+  .wrap { max-width: 440px; margin: 0 auto; padding: 28px 20px 64px; }
+
+  /* En-tête */
+  .eyebrow { font-size: 12px; letter-spacing: .18em; text-transform: uppercase; color: var(--muet); margin: 0 0 6px; }
+  h1 { font-size: 30px; font-weight: 600; margin: 0; letter-spacing: -.01em; }
+  .lieu { color: var(--muet); font-size: 14px; margin: 4px 0 0; }
+
+  /* Carte */
+  .carte { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 20px; margin-top: 20px; }
+
+  /* Instrument */
+  .instrument { text-align: center; }
+  .temp { font-size: 60px; font-weight: 600; letter-spacing: -.03em; line-height: 1; }
+  .ressenti { color: var(--muet); font-size: 13px; margin-top: 6px; }
+  .verdict { display: inline-block; margin-top: 14px; padding: 6px 14px; border-radius: 999px; font-size: 14px; font-weight: 500; border: 1px solid var(--line); }
+  .verdict[data-etat="IDEAL"] { color: var(--frais); border-color: color-mix(in srgb, var(--frais) 45%, transparent); }
+  .verdict[data-etat="TIEDE"] { color: var(--tiede); border-color: color-mix(in srgb, var(--tiede) 45%, transparent); }
+  .verdict[data-etat="CHAUD"] { color: var(--chaud); border-color: color-mix(in srgb, var(--chaud) 45%, transparent); }
+
+  /* Jauge */
+  .jauge { position: relative; margin: 30px 4px 8px; }
+  .piste { height: 12px; border-radius: 999px; background: linear-gradient(90deg, var(--frais), var(--tiede) 55%, var(--chaud)); }
+  .aiguille { position: absolute; top: -7px; width: 3px; height: 26px; background: #fff; border-radius: 2px; transform: translateX(-50%); box-shadow: 0 0 10px rgba(255,255,255,.5); transition: left .5s cubic-bezier(.22,.61,.36,1); }
+  .tick { position: absolute; top: -4px; width: 2px; height: 20px; background: var(--ink); transform: translateX(-50%); }
+  .repere { position: absolute; top: 24px; transform: translateX(-50%); font-size: 11px; color: var(--muet); white-space: nowrap; }
+  .repere b { display: block; color: var(--texte); font-weight: 600; }
+  .maj { margin-top: 30px; display: flex; justify-content: space-between; align-items: center; }
+  .maj span { font-size: 12px; color: var(--muet); }
+  .lien { background: none; border: none; color: var(--frais); font: inherit; font-size: 13px; cursor: pointer; padding: 4px; }
+  .lien:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
+
+  /* Formulaire */
+  .groupe + .groupe { margin-top: 26px; padding-top: 22px; border-top: 1px solid var(--line); }
+  .groupe h2 { font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--muet); margin: 0 0 16px; }
+  label { display: block; font-size: 14px; font-weight: 500; margin-bottom: 6px; }
+  .aide { color: var(--muet); font-size: 12.5px; margin: -2px 0 10px; }
+  input[type=text], input[type=password], input[type=number] {
+    width: 100%; background: var(--surface-2); border: 1px solid var(--line); color: var(--texte);
+    border-radius: 10px; padding: 12px 14px; font: inherit; min-height: 46px;
+  }
+  input.mono { font-family: "IBM Plex Mono", monospace; }
+  input:focus-visible { outline: none; border-color: var(--focus); box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 25%, transparent); }
+  .duo { display: flex; gap: 12px; }
+  .duo > div { flex: 1; }
+  .champ + .champ { margin-top: 16px; }
+
+  /* Interrupteur */
+  .switch-rang { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+  .switch { position: relative; flex: none; width: 52px; height: 30px; }
+  .switch input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+  .piste-sw { position: absolute; inset: 0; background: var(--surface-2); border: 1px solid var(--line); border-radius: 999px; transition: background .2s, border-color .2s; }
+  .pouce { position: absolute; top: 4px; left: 4px; width: 22px; height: 22px; background: var(--muet); border-radius: 50%; transition: transform .2s, background .2s; }
+  .switch input:checked ~ .piste-sw { background: color-mix(in srgb, var(--frais) 30%, transparent); border-color: var(--frais); }
+  .switch input:checked ~ .pouce { transform: translateX(22px); background: var(--frais); }
+  .switch input:focus-visible ~ .piste-sw { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+  /* Boutons */
+  .btn { width: 100%; border-radius: 10px; padding: 14px; font: inherit; font-weight: 600; cursor: pointer; min-height: 50px; border: 1px solid var(--line); }
+  .btn-primaire { background: var(--frais); color: #08110D; border-color: var(--frais); }
+  .btn-secondaire { background: transparent; color: var(--texte); }
+  .btn:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  .btn:active { transform: translateY(1px); }
+  .actions { margin-top: 24px; display: flex; flex-direction: column; gap: 10px; }
+  .mt12 { margin-top: 12px; }
+
+  /* Porte (mot de passe) */
+  .porte { position: fixed; inset: 0; background: var(--ink); display: flex; align-items: center; justify-content: center; padding: 24px; z-index: 10; }
+  .porte .carte { width: 100%; max-width: 360px; margin: 0; }
+  .porte h1 { font-size: 22px; }
+  .porte p { color: var(--muet); font-size: 14px; margin: 8px 0 20px; }
+  .erreur { color: var(--rouge); font-size: 13px; min-height: 18px; margin-top: 10px; }
+
+  /* Toast */
+  .toast { position: fixed; left: 50%; bottom: 24px; transform: translate(-50%, 16px); background: var(--surface-2); border: 1px solid var(--line); color: var(--texte); padding: 12px 18px; border-radius: 10px; font-size: 14px; opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; z-index: 20; max-width: 90vw; }
+  .toast.affiche { opacity: 1; transform: translate(-50%, 0); }
+  .toast[data-type="erreur"] { border-color: color-mix(in srgb, var(--rouge) 55%, transparent); }
+
+  [hidden] { display: none !important; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .aiguille, .pouce, .piste-sw, .toast, .btn { transition: none; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Porte : verrouille tant que le mot de passe n'est pas validé -->
+<div class="porte" id="porte">
+  <div class="carte">
+    <p class="eyebrow">Domaine de chasse</p>
+    <h1>Réglages d'aération</h1>
+    <p>Entre le mot de passe pour accéder à tes réglages.</p>
+    <input type="password" id="mdp" class="mono" autocomplete="current-password" placeholder="Mot de passe" inputmode="text">
+    <div class="erreur" id="porte-erreur" aria-live="polite"></div>
+    <button class="btn btn-primaire mt12" id="deverrouiller">Déverrouiller</button>
+  </div>
+</div>
+
+<main class="wrap" id="appli" hidden>
+  <header>
+    <p class="eyebrow">Domaine de chasse</p>
+    <h1>Aération</h1>
+    <p class="lieu" id="lieu">Saint-Jory-las-Bloux</p>
+  </header>
+
+  <!-- Instrument -->
+  <section class="carte instrument">
+    <div class="temp mono" id="temp">—</div>
+    <div class="ressenti" id="ressenti"></div>
+    <div class="verdict" id="verdict" data-etat="">En attente…</div>
+    <div class="jauge">
+      <div class="piste"></div>
+      <div class="tick" id="tick-ideale"></div>
+      <div class="tick" id="tick-seuil"></div>
+      <div class="aiguille" id="aiguille" style="left:50%"></div>
+      <div class="repere" id="rep-ideale"><b>—</b>ouvrir</div>
+      <div class="repere" id="rep-seuil"><b>—</b>fermer</div>
+    </div>
+    <div class="maj">
+      <span id="horodatage"></span>
+      <button class="lien" id="actualiser">↻ Actualiser</button>
+    </div>
+  </section>
+
+  <!-- Réglages -->
+  <section class="carte">
+    <div class="groupe">
+      <h2>Notifications</h2>
+      <div class="switch-rang">
+        <div>
+          <label for="notif" style="margin:0">Recevoir des alertes</label>
+          <p class="aide" style="margin:4px 0 0">Une notification quand la température franchit un seuil.</p>
+        </div>
+        <span class="switch">
+          <input type="checkbox" id="notif">
+          <span class="piste-sw"></span>
+          <span class="pouce"></span>
+        </span>
+      </div>
+      <div class="champ" style="margin-top:18px">
+        <label for="topic">Canal de notification</label>
+        <p class="aide">Le nom du topic, identique à celui suivi dans l'app ntfy.</p>
+        <input type="text" id="topic" class="mono" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="ex. aeration-xxxxxxxx">
+      </div>
+      <button class="btn btn-secondaire mt12" id="tester">Envoyer un test</button>
+    </div>
+
+    <div class="groupe">
+      <h2>Position</h2>
+      <div class="duo">
+        <div>
+          <label for="lat">Latitude</label>
+          <input type="number" id="lat" class="mono" inputmode="decimal" step="any">
+        </div>
+        <div>
+          <label for="lon">Longitude</label>
+          <input type="number" id="lon" class="mono" inputmode="decimal" step="any">
+        </div>
+      </div>
+      <button class="btn btn-secondaire mt12" id="geo">Utiliser ma position</button>
+    </div>
+
+    <div class="groupe">
+      <h2>Seuils</h2>
+      <div class="champ">
+        <label for="ideale">Température idéale d'ouverture (°C)</label>
+        <p class="aide">En dessous, ouvrir rafraîchit la pièce.</p>
+        <input type="number" id="ideale" class="mono" inputmode="decimal" step="0.5">
+      </div>
+      <div class="champ">
+        <label for="seuil">Seuil d'alerte (°C)</label>
+        <p class="aide">Au-dessus, mieux vaut garder fermé.</p>
+        <input type="number" id="seuil" class="mono" inputmode="decimal" step="0.5">
+      </div>
+    </div>
+
+    <div class="actions">
+      <button class="btn btn-primaire" id="enregistrer">Enregistrer les réglages</button>
+    </div>
+  </section>
+</main>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+(() => {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const TMIN = 10, TMAX = 40;            // bornes de la jauge
+  const cle = "mdp_aeration";
+
+  // ── Réseau ────────────────────────────────────────────────
+  const pwd = () => sessionStorage.getItem(cle) || "";
+  async function api(chemin, options = {}) {
+    const res = await fetch(chemin, {
+      ...options,
+      headers: { "Authorization": "Bearer " + pwd(), ...(options.headers || {}) },
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = new Error(data.erreur || "Connexion impossible.");
+      err.statut = res.status;
+      throw err;
+    }
+    return data;
+  }
+
+  // ── Porte ─────────────────────────────────────────────────
+  function verrouiller() {
+    sessionStorage.removeItem(cle);
+    $("appli").hidden = true;
+    $("porte").hidden = false;
+  }
+  async function tenterAcces(motDePasse) {
+    sessionStorage.setItem(cle, motDePasse);
+    const c = await api("/api/config");       // 200 = mot de passe correct
+    remplirFormulaire(c);
+    $("porte").hidden = true;
+    $("appli").hidden = false;
+    rafraichirEtat();
+  }
+  $("deverrouiller").addEventListener("click", async () => {
+    const v = $("mdp").value.trim();
+    $("porte-erreur").textContent = "";
+    if (!v) { $("porte-erreur").textContent = "Saisis ton mot de passe."; return; }
+    try { await tenterAcces(v); }
+    catch (e) { $("porte-erreur").textContent = e.message; }
+  });
+  $("mdp").addEventListener("keydown", (e) => { if (e.key === "Enter") $("deverrouiller").click(); });
+
+  // ── Formulaire ────────────────────────────────────────────
+  function remplirFormulaire(c) {
+    $("notif").checked = !!c.notificationsActives;
+    $("topic").value = c.ntfyTopic ?? "";
+    $("lat").value = c.latitude;
+    $("lon").value = c.longitude;
+    $("ideale").value = c.tempIdealeOuverture;
+    $("seuil").value = c.seuilAlerte;
+  }
+  function lireFormulaire() {
+    return {
+      notificationsActives: $("notif").checked,
+      ntfyTopic: $("topic").value.trim(),
+      latitude: Number($("lat").value),
+      longitude: Number($("lon").value),
+      tempIdealeOuverture: Number($("ideale").value),
+      seuilAlerte: Number($("seuil").value),
+    };
+  }
+
+  $("enregistrer").addEventListener("click", async () => {
+    try {
+      await api("/api/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(lireFormulaire()),
+      });
+      toast("Réglages enregistrés.");
+      rafraichirEtat();
+    } catch (e) {
+      if (e.statut === 401) verrouiller();
+      toast(e.message, "erreur");
+    }
+  });
+
+  $("tester").addEventListener("click", async () => {
+    try { await api("/api/test", { method: "POST" }); toast("Notification envoyée."); }
+    catch (e) { if (e.statut === 401) verrouiller(); toast(e.message, "erreur"); }
+  });
+
+  $("geo").addEventListener("click", () => {
+    if (!navigator.geolocation) { toast("Géolocalisation indisponible.", "erreur"); return; }
+    navigator.geolocation.getCurrentPosition(
+      (p) => { $("lat").value = p.coords.latitude.toFixed(4); $("lon").value = p.coords.longitude.toFixed(4); toast("Position renseignée."); },
+      () => toast("Position refusée.", "erreur"),
+      { enableHighAccuracy: false, timeout: 8000 }
+    );
+  });
+
+  $("actualiser").addEventListener("click", rafraichirEtat);
+
+  // ── Instrument ────────────────────────────────────────────
+  const VERDICT = { IDEAL: "Ouvre maintenant", TIEDE: "Bientôt", CHAUD: "Garde fermé" };
+  const pct = (v) => Math.max(0, Math.min(100, ((v - TMIN) / (TMAX - TMIN)) * 100));
+
+  function rendreEtat(e) {
+    $("temp").textContent = e.temperature.toFixed(1) + "°";
+    $("ressenti").textContent = "ressenti " + e.ressenti.toFixed(1) + "°";
+    const verdict = $("verdict");
+    verdict.textContent = VERDICT[e.etat] || "—";
+    verdict.dataset.etat = e.etat;
+
+    $("aiguille").style.left = pct(e.temperature) + "%";
+    placerRepere("ideale", e.tempIdealeOuverture);
+    placerRepere("seuil", e.seuilAlerte);
+
+    const d = new Date();
+    $("horodatage").textContent = "Mis à jour à " + d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+  }
+  function placerRepere(nom, valeur) {
+    const p = pct(valeur) + "%";
+    $("tick-" + nom).style.left = p;
+    const rep = $("rep-" + nom);
+    rep.style.left = p;
+    rep.querySelector("b").textContent = valeur + "°";
+  }
+
+  async function rafraichirEtat() {
+    try {
+      const e = await api("/api/etat");
+      rendreEtat(e);
+    } catch (err) {
+      if (err.statut === 401) { verrouiller(); return; }
+      $("verdict").textContent = "Météo indisponible";
+      $("verdict").dataset.etat = "";
+    }
+  }
+
+  // ── Toast ─────────────────────────────────────────────────
+  let toastTimer;
+  function toast(msg, type) {
+    const t = $("toast");
+    t.textContent = msg;
+    t.dataset.type = type || "ok";
+    t.classList.add("affiche");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => t.classList.remove("affiche"), 2600);
+  }
+
+  // ── Démarrage : reprise de session si possible ────────────
+  if (pwd()) {
+    api("/api/config")
+      .then((c) => { remplirFormulaire(c); $("porte").hidden = true; $("appli").hidden = false; rafraichirEtat(); })
+      .catch(() => verrouiller());
+  }
+})();
+</script>
+</body>
+</html>
