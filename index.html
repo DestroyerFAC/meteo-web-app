@@ -10,17 +10,17 @@
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   :root {
-    --ink: #0E1512;
-    --surface: #16201B;
-    --surface-2: #1E2A24;
-    --line: #2A3A31;
-    --frais: #57B292;
-    --chaud: #D69A52;
-    --tiede: #C9B98A;
-    --texte: #E9E7DF;
-    --muet: #93A096;
-    --focus: #8FD3BA;
-    --rouge: #D9776A;
+    --ink: #0F1620;
+    --surface: #172230;
+    --surface-2: #20303F;
+    --line: #2C3E4F;
+    --frais: #3FB8D4;
+    --chaud: #EF8A5B;
+    --tiede: #E3C778;
+    --texte: #EAF0F5;
+    --muet: #8DA0B0;
+    --focus: #6FD0E6;
+    --rouge: #E5746A;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; }
@@ -36,8 +36,8 @@
   .wrap { max-width: 440px; margin: 0 auto; padding: 28px 20px 64px; }
 
   /* En-tête */
-  .eyebrow { font-size: 12px; letter-spacing: .18em; text-transform: uppercase; color: var(--muet); margin: 0 0 6px; }
-  h1 { font-size: 30px; font-weight: 600; margin: 0; letter-spacing: -.01em; }
+  .eyebrow { font-size: 12px; letter-spacing: .18em; text-transform: uppercase; color: var(--frais); margin: 0 0 6px; }
+  h1 { font-size: 32px; font-weight: 600; margin: 0; letter-spacing: -.01em; }
   .lieu { color: var(--muet); font-size: 14px; margin: 4px 0 0; }
 
   /* Carte */
@@ -114,9 +114,9 @@
 
 <main class="wrap" id="appli">
   <header>
-    <p class="eyebrow">Domaine de chasse</p>
+    <p class="eyebrow">Ouvrir au bon moment</p>
     <h1>Aération</h1>
-    <p class="lieu" id="lieu">Saint-Jory-las-Bloux</p>
+    <p class="lieu" id="lieu">—</p>
   </header>
 
   <!-- Instrument -->
@@ -225,6 +225,12 @@
     $("lon").value = c.longitude;
     $("ideale").value = c.tempIdealeOuverture;
     $("seuil").value = c.seuilAlerte;
+    majLieu(c.latitude, c.longitude);
+  }
+  function majLieu(lat, lon) {
+    if (Number.isFinite(Number(lat)) && Number.isFinite(Number(lon))) {
+      $("lieu").textContent = Number(lat).toFixed(3) + ", " + Number(lon).toFixed(3);
+    }
   }
   function lireFormulaire() {
     return {
@@ -252,8 +258,17 @@
   });
 
   $("tester").addEventListener("click", async () => {
-    try { await api("/api/test", { method: "POST" }); toast("Notification envoyée."); }
-    catch (e) { toast(e.message, "erreur"); }
+    // On envoie le topic actuellement saisi : pas besoin d'enregistrer d'abord.
+    const topic = $("topic").value.trim();
+    if (!topic) { toast("Renseigne d'abord un canal de notification.", "erreur"); return; }
+    try {
+      await api("/api/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ topic }),
+      });
+      toast("Notification envoyée.");
+    } catch (e) { toast(e.message, "erreur"); }
   });
 
   $("geo").addEventListener("click", () => {

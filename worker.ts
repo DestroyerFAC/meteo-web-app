@@ -59,7 +59,7 @@ const CLE_ETAT = "dernier_etat";
 const TOPIC_REGEX = /^[A-Za-z0-9_-]+$/; // segments d'URL ntfy : pas d'injection possible
 
 const CONFIG_DEFAUT: ConfigStockee = {
-  latitude: 45.36,            // Saint-Jory-las-Bloux
+  latitude: 45.36,            // position par défaut (modifiable dans la page)
   longitude: 0.92,
   seuilAlerte: 30,
   tempIdealeOuverture: 25,
@@ -255,11 +255,26 @@ export default {
 
       if (chemin === "/api/test" && request.method === "POST") {
         const config = await lireConfig(env);
-        if (!config.ntfyTopic) return json({ erreur: "Aucun canal de notification configuré." }, 400);
+
+        // Topic optionnel dans le corps : permet de tester sans enregistrer d'abord.
+        let topicDemande = "";
+        try {
+          const corps = await request.json();
+          if (corps && typeof corps === "object" && typeof (corps as Record<string, unknown>).topic === "string") {
+            topicDemande = ((corps as Record<string, unknown>).topic as string).trim();
+          }
+        } catch { /* pas de corps : on retombe sur le topic enregistré */ }
+
+        const topic = topicDemande || config.ntfyTopic;
+        if (!topic) return json({ erreur: "Renseigne d'abord un canal de notification." }, 400);
+        // Whitelist (segment d'URL ntfy) : pas d'injection possible.
+        if (topic.length > 64 || !TOPIC_REGEX.test(topic))
+          return json({ erreur: "Canal invalide : lettres, chiffres, tirets et underscores uniquement (max 64)." }, 400);
+
         try {
           await envoyerNotification(
             { titre: "🔔 Test", corps: "Notification de test — si tu lis ça, tout fonctionne.", tags: ["bell"], priorite: 3 },
-            config,
+            { ...config, ntfyTopic: topic },
           );
           return json({ ok: true });
         } catch (e) {
