@@ -68,6 +68,26 @@ Le cron tourne ensuite tout seul côté Cloudflare. URL HTTPS, gratuite, permane
 5. (Optionnel) « Ajouter à l'écran d'accueil » depuis le navigateur pour avoir
    l'app en raccourci.
 
+## Notifications fiables : token ntfy (optionnel mais recommandé)
+
+ntfy.sh limite le débit **par adresse IP**. Les Cloudflare Workers sortent par des
+IP **partagées** : en envoyant beaucoup de notifications rapprochées (typiquement
+en spammant « Envoyer un test »), on peut recevoir un **429** de ntfy.
+
+Solution : authentifier les envois avec un **token de compte ntfy**, pour que la
+limite soit liée à ton compte et non à l'IP partagée.
+
+1. Crée un compte gratuit sur https://ntfy.sh (ou dans l'app ntfy → Settings).
+2. Génère un **access token** (web : *Account → Access tokens → Create token*).
+3. Ajoute-le comme secret du Worker, sous le nom **`NTFY_TOKEN`** :
+   - Dashboard Cloudflare → Worker `meteo-web-app` → *Settings → Variables and
+     Secrets → Add → Secret*, nom `NTFY_TOKEN`, valeur = le token.
+   - ou en CLI : `npx wrangler secret put NTFY_TOKEN`
+
+Si `NTFY_TOKEN` est défini, le worker l'envoie en `Authorization: Bearer`. Sinon,
+il publie en anonyme (suffisant pour les rares alertes du cron). Le token n'est
+jamais renvoyé à la page (exclu de `/api/config`).
+
 ## Vérifier le build avant de déployer
 
 ```bash
