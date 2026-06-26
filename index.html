@@ -154,10 +154,10 @@
         </span>
       </div>
       <div class="champ" style="margin-top:18px">
-        <label for="topic">Canal de notification</label>
-        <p class="aide">Le nom du topic, identique à celui suivi dans l'app ntfy.</p>
-        <input type="text" id="topic" class="mono" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="ex. aeration-xxxxxxxx">
-        <p class="aide" id="token-statut" style="margin-top:8px"></p>
+        <label>Telegram</label>
+        <p class="aide">Reçois les alertes dans Telegram via ton bot perso. Envoie <b>/start</b> à ton bot, puis connecte-le ici.</p>
+        <button class="btn btn-secondaire" id="connecter">Connecter Telegram</button>
+        <p class="aide" id="tg-statut" style="margin-top:10px"></p>
       </div>
       <button class="btn btn-secondaire mt12" id="tester">Envoyer un test</button>
     </div>
@@ -204,6 +204,8 @@
   "use strict";
   const $ = (id) => document.getElementById(id);
   const TMIN = 10, TMAX = 40;            // bornes de la jauge
+  let chatId = "";                       // destination Telegram (id de chat), gérée hors formulaire
+  let tokenConfigure = false;            // le worker voit-il le secret TELEGRAM_TOKEN ?
 
   // ── Réseau ────────────────────────────────────────────────
   // Plus d'authentification : l'API est en accès libre (mot de passe désactivé).
@@ -221,22 +223,26 @@
   // ── Formulaire ────────────────────────────────────────────
   function remplirFormulaire(c) {
     $("notif").checked = !!c.notificationsActives;
-    $("topic").value = c.ntfyTopic ?? "";
+    chatId = c.telegramChatId || "";
+    tokenConfigure = !!c.telegramTokenConfigure;
     $("lat").value = c.latitude;
     $("lon").value = c.longitude;
     $("ideale").value = c.tempIdealeOuverture;
     $("seuil").value = c.seuilAlerte;
     majLieu(c.latitude, c.longitude);
-    majStatutToken(c.ntfyTokenConfigure);
+    majStatutTelegram();
   }
-  function majStatutToken(configure) {
-    const st = $("token-statut");
-    if (configure) {
-      st.textContent = "✓ Token ntfy détecté côté serveur.";
+  function majStatutTelegram() {
+    const st = $("tg-statut");
+    if (!tokenConfigure) {
+      st.textContent = "⚠ Bot non configuré : ajoute le secret TELEGRAM_TOKEN sur le worker.";
+      st.style.color = "var(--chaud)";
+    } else if (chatId) {
+      st.textContent = "✓ Telegram connecté (chat " + chatId + ").";
       st.style.color = "var(--frais)";
     } else {
-      st.textContent = "⚠ Aucun token ntfy côté serveur — envois anonymes (très limités). Ajoute le secret NTFY_TOKEN.";
-      st.style.color = "var(--chaud)";
+      st.textContent = "Bot prêt. Envoie /start à ton bot dans Telegram, puis clique « Connecter Telegram ».";
+      st.style.color = "var(--muet)";
     }
   }
   function majLieu(lat, lon) {
@@ -247,21 +253,24 @@
   function lireFormulaire() {
     return {
       notificationsActives: $("notif").checked,
-      ntfyTopic: $("topic").value.trim(),
+      telegramChatId: chatId,
       latitude: Number($("lat").value),
       longitude: Number($("lon").value),
       tempIdealeOuverture: Number($("ideale").value),
       seuilAlerte: Number($("seuil").value),
     };
   }
+  async function sauverConfig() {
+    await api("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(lireFormulaire()),
+    });
+  }
 
   $("enregistrer").addEventListener("click", async () => {
     try {
-      await api("/api/config", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(lireFormulaire()),
-      });
+      await sauverConfig();
       toast("Réglages enregistrés.");
       rafraichirEtat();
     } catch (e) {
@@ -269,16 +278,22 @@
     }
   });
 
-  $("tester").addEventListener("click", async () => {
-    // On envoie le topic actuellement saisi : pas besoin d'enregistrer d'abord.
-    const topic = $("topic").value.trim();
-    if (!topic) { toast("Renseigne d'abord un canal de notification.", "erreur"); return; }
+  $("connecter").addEventListener("click", async () => {
     try {
-      await api("/api/test", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ topic }),
-      });
+      const r = await api("/api/telegram/connect", { method: "POST" });
+      chatId = r.chatId;
+      majStatutTelegram();
+      await sauverConfig();   // on enregistre tout de suite pour que la connexion persiste
+      toast("Telegram connecté" + (r.nom ? " : " + r.nom : "") + ".");
+    } catch (e) {
+      toast(e.message, "erreur");
+    }
+  });
+
+  $("tester").addEventListener("click", async () => {
+    if (!chatId) { toast("Connecte Telegram d'abord.", "erreur"); return; }
+    try {
+      await api("/api/test", { method: "POST" });
       toast("Notification envoyée.");
     } catch (e) { toast(e.message, "erreur"); }
   });
