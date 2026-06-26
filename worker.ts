@@ -246,8 +246,9 @@ export default {
       // Accès libre : pas d'authentification (app perso, mot de passe désactivé).
       if (chemin === "/api/config" && request.method === "GET") {
         // On exclut ntfyServeur et ntfyToken : ne jamais exposer le token au client.
+        // ntfyTokenConfigure (booléen) : permet à la page d'indiquer si le secret est bien lu par le worker.
         const { ntfyServeur, ntfyToken, ...stockee } = await lireConfig(env);
-        return json(stockee);
+        return json({ ...stockee, ntfyTokenConfigure: Boolean(ntfyToken) });
       }
 
       if (chemin === "/api/config" && request.method === "POST") {
