@@ -1,12 +1,12 @@
 # Rappel d'aération 🌡️
 
 Mini web app **mobile** qui surveille la **température extérieure** (Open-Meteo)
-et t'envoie une **notification push** (ntfy) au bon moment pour ouvrir ou fermer
+et t'envoie une **notification Telegram** au bon moment pour ouvrir ou fermer
 une pièce et la rafraîchir naturellement.
 
 L'app tourne **en arrière-plan côté serveur** (Cloudflare Worker + Cron toutes
 les 15 min) : pas besoin que ton téléphone reste allumé ni qu'une app reste
-ouverte. Tu reçois juste les notifications.
+ouverte. Tu reçois juste les notifications dans Telegram.
 
 ## Comment ça marche
 
@@ -34,8 +34,7 @@ meteo-web-app/
 
 ## Déploiement (à lancer depuis ta machine)
 
-> Tu as besoin d'un compte Cloudflare (gratuit) et de l'app **ntfy** sur ton
-> téléphone (App Store / Play Store).
+> Tu as besoin d'un compte Cloudflare (gratuit) et de l'app **Telegram**.
 
 ```bash
 # 1. Dépendances
@@ -48,45 +47,40 @@ npx wrangler login
 #    renseigné dans wrangler.toml. Rien à faire ici.
 #    Pour en recréer un toi-même : npx wrangler kv namespace create ETAT_METEO
 
-# 4. Déploie (l'app est en accès libre, aucun secret à configurer)
+# 4. Déploie
 npx wrangler deploy
+
+# 5. Ajoute le token de ton bot Telegram (voir « Bot Telegram » ci-dessous)
+npx wrangler secret put TELEGRAM_TOKEN
 ```
 
-Wrangler affiche à la fin l'URL publique
-`https://meteo-rappel-aeration.<ton-sous-domaine>.workers.dev`.
+Wrangler affiche l'URL publique `https://<nom>.<ton-sous-domaine>.workers.dev`.
 Le cron tourne ensuite tout seul côté Cloudflare. URL HTTPS, gratuite, permanente.
+
+## Bot Telegram (gratuit, sans limite de débit)
+
+1. Dans Telegram, ouvre **@BotFather** → `/newbot` → choisis un nom et un
+   identifiant. Il te donne un **token** du type `123456789:AAH...`.
+2. Ajoute ce token comme **secret** du Worker, nom exact **`TELEGRAM_TOKEN`** :
+   - Dashboard Cloudflare → Worker → *Settings → Variables and Secrets → Add →
+     Secret*, nom `TELEGRAM_TOKEN`, valeur = le token.
+   - ou en CLI : `npx wrangler secret put TELEGRAM_TOKEN`
+3. Ouvre **ton bot** dans Telegram et envoie-lui **/start** (indispensable : un
+   bot ne peut pas écrire à quelqu'un qui ne l'a pas démarré).
+
+Le token reste un secret côté serveur (jamais renvoyé à la page). La destination
+(chat id) est détectée automatiquement par le bouton « Connecter Telegram » de la
+page (lecture de `getUpdates`).
 
 ## Première utilisation
 
-1. Ouvre l'app **ntfy** sur ton téléphone → abonne-toi à un topic (un nom au
-   choix, ex. `aeration-7f3k9z2q` ; choisis-en un peu devinable, c'est ta clé de
-   notification).
-2. Ouvre l'URL `workers.dev` → la page de réglages s'affiche directement.
-3. Active **« Recevoir des alertes »**, colle le même topic ntfy, règle tes
-   seuils, **Enregistre**.
-4. **« Envoyer un test »** → la notification doit arriver sur ton téléphone.
-5. (Optionnel) « Ajouter à l'écran d'accueil » depuis le navigateur pour avoir
-   l'app en raccourci.
-
-## Notifications fiables : token ntfy (optionnel mais recommandé)
-
-ntfy.sh limite le débit **par adresse IP**. Les Cloudflare Workers sortent par des
-IP **partagées** : en envoyant beaucoup de notifications rapprochées (typiquement
-en spammant « Envoyer un test »), on peut recevoir un **429** de ntfy.
-
-Solution : authentifier les envois avec un **token de compte ntfy**, pour que la
-limite soit liée à ton compte et non à l'IP partagée.
-
-1. Crée un compte gratuit sur https://ntfy.sh (ou dans l'app ntfy → Settings).
-2. Génère un **access token** (web : *Account → Access tokens → Create token*).
-3. Ajoute-le comme secret du Worker, sous le nom **`NTFY_TOKEN`** :
-   - Dashboard Cloudflare → Worker `meteo-web-app` → *Settings → Variables and
-     Secrets → Add → Secret*, nom `NTFY_TOKEN`, valeur = le token.
-   - ou en CLI : `npx wrangler secret put NTFY_TOKEN`
-
-Si `NTFY_TOKEN` est défini, le worker l'envoie en `Authorization: Bearer`. Sinon,
-il publie en anonyme (suffisant pour les rares alertes du cron). Le token n'est
-jamais renvoyé à la page (exclu de `/api/config`).
+1. Ouvre l'URL `workers.dev` → la page de réglages s'affiche directement.
+2. Vérifie que le statut sous **Telegram** indique « Bot prêt » (sinon, le secret
+   `TELEGRAM_TOKEN` n'est pas en place).
+3. Clique **« Connecter Telegram »** → le chat est détecté et enregistré.
+4. **« Envoyer un test »** → le message arrive dans Telegram.
+5. Active **« Recevoir des alertes »**, règle tes seuils, **Enregistre**.
+6. (Optionnel) « Ajouter à l'écran d'accueil » depuis le navigateur.
 
 ## Vérifier le build avant de déployer
 
@@ -103,6 +97,7 @@ Teste 31 / 27 / 23 pour voir les trois états.
 
 L'app est volontairement **sans mot de passe** : l'URL `workers.dev` est publique,
 donc quiconque la connaît peut voir et modifier les réglages (seuils, position,
-canal ntfy) et envoyer un test. C'est acceptable pour un usage perso avec une URL
-peu devinable. Pour ré-ajouter une protection plus tard, on peut remettre un
-secret `MOT_DE_PASSE` et une vérification `Authorization: Bearer` dans le worker.
+destination Telegram) et envoyer un test. C'est acceptable pour un usage perso
+avec une URL peu devinable. Le token du bot, lui, reste un secret côté serveur.
+Pour ré-ajouter une protection, on peut remettre un secret `MOT_DE_PASSE` et une
+vérification `Authorization: Bearer` dans le worker.
