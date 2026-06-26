@@ -23,6 +23,7 @@ import PAGE_HTML from "./index.html";
 
 interface Env {
   ETAT_METEO: KVNamespace;   // KV : config + dernier état (binding obligatoire)
+  NTFY_TOKEN?: string;       // secret optionnel : token de compte ntfy (limites liées au compte, pas à l'IP partagée Cloudflare)
 }
 
 /** Réglages persistés dans KV. */
@@ -35,8 +36,8 @@ interface ConfigStockee {
   notificationsActives: boolean;
 }
 
-/** Config d'exécution = réglages + serveur ntfy (non éditable). */
-type Config = ConfigStockee & { ntfyServeur: string };
+/** Config d'exécution = réglages + serveur ntfy (non éditable) + token ntfy optionnel. */
+type Config = ConfigStockee & { ntfyServeur: string; ntfyToken?: string };
 
 type Etat = "CHAUD" | "TIEDE" | "IDEAL";
 
@@ -160,7 +161,7 @@ async function lireConfig(env: Env): Promise<Config> {
       console.warn("Config KV illisible, retour aux défauts.");
     }
   }
-  return { ...stockee, ntfyServeur: NTFY_SERVEUR };
+  return { ...stockee, ntfyServeur: NTFY_SERVEUR, ntfyToken: env.NTFY_TOKEN };
 }
 
 async function ecrireConfig(env: Env, valeur: ConfigStockee): Promise<void> {
@@ -189,9 +190,13 @@ async function recupererMeteo(c: Config): Promise<{ temp: number; ressenti: numb
 
 async function envoyerNotification(n: Notification, c: Config): Promise<void> {
   // API JSON de ntfy : titre/message en UTF-8 dans le corps -> aucun souci d'encodage d'en-tête.
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  // Token de compte ntfy (optionnel) : la limite de débit est liée au compte, pas à
+  // l'IP de sortie partagée de Cloudflare -> évite les 429 lors d'envois rapprochés.
+  if (c.ntfyToken) headers["Authorization"] = `Bearer ${c.ntfyToken}`;
   const reponse = await fetch(c.ntfyServeur, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify({ topic: c.ntfyTopic, title: n.titre, message: n.corps, tags: n.tags, priority: n.priorite }),
   });
   if (!reponse.ok) {
@@ -240,7 +245,8 @@ export default {
     if (chemin.startsWith("/api/")) {
       // Accès libre : pas d'authentification (app perso, mot de passe désactivé).
       if (chemin === "/api/config" && request.method === "GET") {
-        const { ntfyServeur, ...stockee } = await lireConfig(env);
+        // On exclut ntfyServeur et ntfyToken : ne jamais exposer le token au client.
+        const { ntfyServeur, ntfyToken, ...stockee } = await lireConfig(env);
         return json(stockee);
       }
 
