@@ -157,6 +157,7 @@
         <label for="topic">Canal de notification</label>
         <p class="aide">Le nom du topic, identique à celui suivi dans l'app ntfy.</p>
         <input type="text" id="topic" class="mono" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="ex. aeration-xxxxxxxx">
+        <p class="aide" id="token-statut" style="margin-top:8px"></p>
       </div>
       <button class="btn btn-secondaire mt12" id="tester">Envoyer un test</button>
     </div>
@@ -226,6 +227,17 @@
     $("ideale").value = c.tempIdealeOuverture;
     $("seuil").value = c.seuilAlerte;
     majLieu(c.latitude, c.longitude);
+    majStatutToken(c.ntfyTokenConfigure);
+  }
+  function majStatutToken(configure) {
+    const st = $("token-statut");
+    if (configure) {
+      st.textContent = "✓ Token ntfy détecté côté serveur.";
+      st.style.color = "var(--frais)";
+    } else {
+      st.textContent = "⚠ Aucun token ntfy côté serveur — envois anonymes (très limités). Ajoute le secret NTFY_TOKEN.";
+      st.style.color = "var(--chaud)";
+    }
   }
   function majLieu(lat, lon) {
     if (Number.isFinite(Number(lat)) && Number.isFinite(Number(lon))) {
