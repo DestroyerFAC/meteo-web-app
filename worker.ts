@@ -460,6 +460,28 @@ export default {
         }
       }
 
+      if (chemin === "/api/telegram/diag" && request.method === "GET") {
+        // Diagnostic : état du webhook côté Telegram (aucun secret renvoyé).
+        const config = await lireConfig(env);
+        if (!config.telegramToken) return json({ erreur: "TELEGRAM_TOKEN manquant (secret non vu par le worker)." }, 400);
+        try {
+          const r = await fetch(`https://api.telegram.org/bot${config.telegramToken}/getWebhookInfo`);
+          const data = (await r.json()) as {
+            result?: { url?: string; pending_update_count?: number; last_error_date?: number; last_error_message?: string };
+          };
+          const info = data.result ?? {};
+          return json({
+            webhookUrl: info.url || "(aucun webhook armé)",
+            messagesEnAttente: info.pending_update_count ?? 0,
+            derniereErreur: info.last_error_message || "(aucune)",
+            derniereErreurQuand: info.last_error_date ? new Date(info.last_error_date * 1000).toISOString() : null,
+            chatEnregistre: config.telegramChatId || "(aucun)",
+          });
+        } catch (e) {
+          return json({ erreur: e instanceof Error ? e.message : "Échec du diagnostic." }, 502);
+        }
+      }
+
       if (chemin === "/api/test" && request.method === "POST") {
         const config = await lireConfig(env);
         if (!config.telegramToken) return json({ erreur: "Ajoute d'abord le secret TELEGRAM_TOKEN sur le worker." }, 400);
