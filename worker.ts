@@ -439,12 +439,22 @@ export default {
         try {
           // getUpdates et le webhook sont exclusifs : on retire le webhook le temps de lire le chat…
           await fetch(`https://api.telegram.org/bot${config.telegramToken}/deleteWebhook`).catch(() => {});
-          const chat = await detecterChatTelegram(config);
-          if (!chat)
+          // Détection du chat, non bloquante : si getUpdates ne renvoie rien (message expiré
+          // après 24 h) on retombe sur le chat déjà enregistré, pour armer quand même le webhook.
+          let detecte: { chatId: string; nom: string } | null = null;
+          try { detecte = await detecterChatTelegram(config); } catch { /* getUpdates indispo : on continue */ }
+          const chatId = detecte?.chatId ?? config.telegramChatId;
+          if (!chatId)
             return json({ erreur: "Aucun message reçu. Ouvre ton bot dans Telegram et envoie /start, puis réessaie." }, 404);
+          // Enregistre le chat si nouvellement détecté.
+          if (detecte && detecte.chatId !== config.telegramChatId) {
+            const { telegramToken, ...stockee } = config;
+            const v = validerConfig({ ...stockee, telegramChatId: detecte.chatId });
+            if (v.ok) await ecrireConfig(env, v.valeur);
+          }
           // …puis on (ré)arme le webhook pour activer les commandes du bot.
           await configurerWebhook(env, config.telegramToken, new URL(request.url).origin);
-          return json(chat);
+          return json({ chatId, nom: detecte?.nom ?? "" });
         } catch (e) {
           return json({ erreur: e instanceof Error ? e.message : "Échec de la connexion Telegram." }, 502);
         }
