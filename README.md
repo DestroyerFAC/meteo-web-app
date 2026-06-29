@@ -82,6 +82,30 @@ page (lecture de `getUpdates`).
 5. Active **« Recevoir des alertes »**, règle tes seuils, **Enregistre**.
 6. (Optionnel) « Ajouter à l'écran d'accueil » depuis le navigateur.
 
+## Piloter le bot par message
+
+Une fois « Connecter Telegram » fait (ce qui arme le webhook), tu peux régler
+l'app directement depuis Telegram :
+
+| Message | Effet |
+|---------|-------|
+| `/etat` | météo et conseil actuels |
+| `/seuil 30` | règle le seuil « garder fermé » (°C) |
+| `/ideale 25` | règle la température idéale d'ouverture (°C) |
+| `/alertes on` / `/alertes off` | active / coupe les alertes |
+| `/aide` | liste des commandes |
+| 📍 **partage de position** | met à jour le lieu suivi |
+
+**Suivi de position automatique** : une web app ne peut pas suivre le GPS en
+arrière-plan. Pour un suivi « auto », partage ta **position en direct** avec le
+bot (Telegram : trombone → Position → *Partager ma position en direct*, 15 min
+à 8 h) : chaque mise à jour repositionne le lieu suivi. Un partage de position
+ponctuel le fixe une fois.
+
+Côté technique : `/api/telegram/connect` lit le chat (getUpdates) puis enregistre
+un **webhook** (`setWebhook`) protégé par un jeton secret stocké en KV ; le worker
+ne traite que les messages venant du chat propriétaire.
+
 ## Vérifier le build avant de déployer
 
 ```bash

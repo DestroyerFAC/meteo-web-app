@@ -60,10 +60,16 @@ interface TelegramUpdates {
   result?: Array<{ message?: { chat?: { id?: number; first_name?: string; title?: string } } }>;
 }
 
+// Champs Telegram utilisés par le webhook (sous-ensemble volontairement minimal).
+interface TgLocation { latitude?: number; longitude?: number }
+interface TgMessage { chat?: { id?: number }; text?: string; location?: TgLocation }
+interface TgUpdate { message?: TgMessage; edited_message?: TgMessage }
+
 // ─────────────────────────── Constantes ───────────────────────────
 
 const CLE_CONFIG = "config";
 const CLE_ETAT = "dernier_etat";
+const CLE_WEBHOOK_SECRET = "webhook_secret"; // jeton partagé avec Telegram pour valider les appels du webhook
 const CHAT_ID_REGEX = /^-?\d{1,20}$/; // id de chat Telegram : entier (négatif possible pour les groupes)
 
 const CONFIG_DEFAUT: ConfigStockee = {
@@ -189,19 +195,22 @@ async function recupererMeteo(c: Config): Promise<{ temp: number; ressenti: numb
   return { temp, ressenti };
 }
 
-async function envoyerNotification(n: Notification, c: Config): Promise<void> {
-  if (!c.telegramToken) throw new Error("Bot Telegram non configuré (secret TELEGRAM_TOKEN manquant).");
-  if (!c.telegramChatId) throw new Error("Aucune destination Telegram (clique « Connecter Telegram »).");
-
-  const reponse = await fetch(`https://api.telegram.org/bot${c.telegramToken}/sendMessage`, {
+async function telegramEnvoyer(token: string, chatId: string, texte: string): Promise<void> {
+  const reponse = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: c.telegramChatId, text: `${n.titre}\n${n.corps}` }),
+    body: JSON.stringify({ chat_id: chatId, text: texte }),
   });
   if (!reponse.ok) {
     const detail = await reponse.text().catch(() => "");
     throw new Error(`Telegram a répondu ${reponse.status} ${detail}`.trim());
   }
+}
+
+async function envoyerNotification(n: Notification, c: Config): Promise<void> {
+  if (!c.telegramToken) throw new Error("Bot Telegram non configuré (secret TELEGRAM_TOKEN manquant).");
+  if (!c.telegramChatId) throw new Error("Aucune destination Telegram (clique « Connecter Telegram »).");
+  await telegramEnvoyer(c.telegramToken, c.telegramChatId, `${n.titre}\n${n.corps}`);
 }
 
 /** Lit getUpdates et renvoie le chat le plus récent ayant écrit au bot. */
@@ -221,6 +230,144 @@ async function detecterChatTelegram(c: Config): Promise<{ chatId: string; nom: s
     }
   }
   return null;
+}
+
+// ─────────────────────── Bot Telegram : webhook & commandes ───────────────────────
+
+/** Enregistre le webhook auprès de Telegram (commandes en temps réel). */
+async function configurerWebhook(env: Env, token: string, origin: string): Promise<void> {
+  let secret = await env.ETAT_METEO.get(CLE_WEBHOOK_SECRET);
+  if (!secret) {
+    secret = crypto.randomUUID().replace(/-/g, ""); // hex -> caractères autorisés par Telegram
+    await env.ETAT_METEO.put(CLE_WEBHOOK_SECRET, secret);
+  }
+  const reponse = await fetch(`https://api.telegram.org/bot${token}/setWebhook`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      url: `${origin}/api/telegram/webhook`,
+      secret_token: secret,
+      allowed_updates: ["message", "edited_message"],
+    }),
+  });
+  if (!reponse.ok) {
+    const detail = await reponse.text().catch(() => "");
+    throw new Error(`setWebhook a échoué : ${reponse.status} ${detail}`.trim());
+  }
+}
+
+function aideTexte(c: Config): string {
+  return [
+    "🌡️ Aération — commandes :",
+    "/etat — météo et conseil actuels",
+    "/seuil 30 — régler le seuil « garder fermé » (°C)",
+    "/ideale 25 — régler la température idéale d'ouverture (°C)",
+    "/alertes on  ·  /alertes off — activer / couper les alertes",
+    "📍 Envoie ta position (ou une position en direct) pour mettre à jour le lieu suivi.",
+    "",
+    `Réglages actuels : ouvrir ≤ ${c.tempIdealeOuverture}°C, fermer ≥ ${c.seuilAlerte}°C, alertes ${c.notificationsActives ? "ON" : "OFF"}.`,
+  ].join("\n");
+}
+
+/** Applique une modification de réglages venant du bot, valide et confirme (ou explique l'erreur). */
+async function appliquerModif(
+  env: Env,
+  token: string,
+  chatId: string,
+  stockee: ConfigStockee,
+  modif: Partial<ConfigStockee>,
+  confirmation: string,
+): Promise<void> {
+  const v = validerConfig({ ...stockee, ...modif });
+  if (!v.ok) { await telegramEnvoyer(token, chatId, "⚠ " + v.erreur); return; }
+  await ecrireConfig(env, v.valeur);
+  await telegramEnvoyer(token, chatId, confirmation);
+}
+
+/** Traite un message reçu du propriétaire (commande texte ou partage de position). */
+async function traiterMessage(env: Env, config: Config, msg: TgMessage): Promise<void> {
+  const token = config.telegramToken;
+  if (!token || typeof msg.chat?.id !== "number") return;
+  const chatId = String(msg.chat.id);
+  const { telegramToken, ...stockee } = config; // réglages persistables actuels
+
+  // 1) Partage de position (ponctuel ou « position en direct » via edited_message).
+  if (msg.location && estNombreFini(msg.location.latitude) && estNombreFini(msg.location.longitude)) {
+    const lat = Math.round(msg.location.latitude * 1e4) / 1e4;
+    const lon = Math.round(msg.location.longitude * 1e4) / 1e4;
+    await appliquerModif(env, token, chatId, stockee, { latitude: lat, longitude: lon },
+      `📍 Position mise à jour : ${lat.toFixed(3)}, ${lon.toFixed(3)}.`);
+    return;
+  }
+
+  // 2) Commande texte.
+  const texte = (msg.text ?? "").trim();
+  if (!texte) return;
+  const morceaux = texte.split(/\s+/);
+  let cmd = morceaux[0].toLowerCase();
+  if (cmd.startsWith("/")) cmd = cmd.slice(1);
+  const arobase = cmd.indexOf("@"); // ex. /seuil@MonBot dans un groupe
+  if (arobase >= 0) cmd = cmd.slice(0, arobase);
+  const arg = morceaux.slice(1).join(" ").replace(",", ".").trim();
+
+  if (cmd === "seuil" || cmd === "ideale" || cmd === "ideal") {
+    const n = Number(arg);
+    if (arg === "" || !Number.isFinite(n)) {
+      await telegramEnvoyer(token, chatId, `Indique une valeur, ex. /${cmd === "seuil" ? "seuil 30" : "ideale 25"}`);
+      return;
+    }
+    if (cmd === "seuil")
+      await appliquerModif(env, token, chatId, stockee, { seuilAlerte: n }, `✅ Seuil d'alerte réglé sur ${n}°C.`);
+    else
+      await appliquerModif(env, token, chatId, stockee, { tempIdealeOuverture: n }, `✅ Température idéale d'ouverture réglée sur ${n}°C.`);
+    return;
+  }
+
+  if (cmd === "alertes") {
+    const v = arg.toLowerCase();
+    if (v !== "on" && v !== "off") { await telegramEnvoyer(token, chatId, "Utilise /alertes on ou /alertes off."); return; }
+    await appliquerModif(env, token, chatId, stockee, { notificationsActives: v === "on" },
+      v === "on" ? "🔔 Alertes activées." : "🔕 Alertes désactivées.");
+    return;
+  }
+
+  if (cmd === "etat" || cmd === "meteo") {
+    try {
+      const { temp, ressenti } = await recupererMeteo(config);
+      const etat = determinerEtat(temp, config);
+      const libelle = etat === "CHAUD" ? "🔥 Garde fermé" : etat === "TIEDE" ? "🌡️ Ça redescend" : "✅ Ouvre maintenant";
+      await telegramEnvoyer(token, chatId,
+        `${libelle}\n${temp.toFixed(1)}°C (ressenti ${ressenti.toFixed(1)}°C)\nOuvrir ≤ ${config.tempIdealeOuverture}°C · fermer ≥ ${config.seuilAlerte}°C.`);
+    } catch {
+      await telegramEnvoyer(token, chatId, "Météo indisponible pour le moment.");
+    }
+    return;
+  }
+
+  // /start, /aide, /help ou commande inconnue -> aide.
+  await telegramEnvoyer(token, chatId, aideTexte(config));
+}
+
+/** Endpoint appelé par Telegram à chaque update. Toujours répondre 200 (sinon Telegram réessaie). */
+async function gererWebhook(request: Request, env: Env): Promise<Response> {
+  const config = await lireConfig(env);
+  if (!config.telegramToken) return json({ ok: true });
+
+  const secretAttendu = await env.ETAT_METEO.get(CLE_WEBHOOK_SECRET);
+  if (!secretAttendu || request.headers.get("X-Telegram-Bot-Api-Secret-Token") !== secretAttendu)
+    return new Response("forbidden", { status: 403 });
+
+  let update: TgUpdate;
+  try { update = (await request.json()) as TgUpdate; } catch { return json({ ok: true }); }
+  const msg = update.message ?? update.edited_message;
+  if (!msg) return json({ ok: true });
+
+  // On n'accepte que le chat propriétaire (celui connecté). Les autres sont ignorés.
+  if (!config.telegramChatId || String(msg.chat?.id) !== config.telegramChatId) return json({ ok: true });
+
+  try { await traiterMessage(env, config, msg); }
+  catch (e) { console.error("Webhook :", e instanceof Error ? e.message : e); }
+  return json({ ok: true });
 }
 
 const json = (data: unknown, status = 200): Response => Response.json(data, { status });
@@ -263,6 +410,11 @@ export default {
     }
 
     if (chemin.startsWith("/api/")) {
+      // Webhook Telegram : validé par jeton secret (en-tête), pas d'autre auth.
+      if (chemin === "/api/telegram/webhook" && request.method === "POST") {
+        return gererWebhook(request, env);
+      }
+
       // Accès libre : pas d'authentification (app perso).
       if (chemin === "/api/config" && request.method === "GET") {
         // On exclut telegramToken : ne jamais exposer le token au client.
@@ -285,9 +437,13 @@ export default {
         if (!config.telegramToken)
           return json({ erreur: "Ajoute d'abord le secret TELEGRAM_TOKEN sur le worker." }, 400);
         try {
+          // getUpdates et le webhook sont exclusifs : on retire le webhook le temps de lire le chat…
+          await fetch(`https://api.telegram.org/bot${config.telegramToken}/deleteWebhook`).catch(() => {});
           const chat = await detecterChatTelegram(config);
           if (!chat)
             return json({ erreur: "Aucun message reçu. Ouvre ton bot dans Telegram et envoie /start, puis réessaie." }, 404);
+          // …puis on (ré)arme le webhook pour activer les commandes du bot.
+          await configurerWebhook(env, config.telegramToken, new URL(request.url).origin);
           return json(chat);
         } catch (e) {
           return json({ erreur: e instanceof Error ? e.message : "Échec de la connexion Telegram." }, 502);

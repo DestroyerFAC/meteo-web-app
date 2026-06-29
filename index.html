@@ -160,6 +160,7 @@
         <p class="aide" id="tg-statut" style="margin-top:10px"></p>
       </div>
       <button class="btn btn-secondaire mt12" id="tester">Envoyer un test</button>
+      <p class="aide" style="margin-top:12px">Pilote aussi le bot par message : <b>/seuil 30</b>, <b>/ideale 25</b>, <b>/alertes on</b>, <b>/etat</b> — ou <b>envoie-lui ta position</b> (📍 ou « position en direct ») pour suivre le lieu automatiquement.</p>
     </div>
 
     <div class="groupe">
@@ -284,7 +285,7 @@
       chatId = r.chatId;
       majStatutTelegram();
       await sauverConfig();   // on enregistre tout de suite pour que la connexion persiste
-      toast("Telegram connecté" + (r.nom ? " : " + r.nom : "") + ".");
+      toast("Telegram connecté" + (r.nom ? " : " + r.nom : "") + " — commandes activées.");
     } catch (e) {
       toast(e.message, "erreur");
     }
@@ -301,7 +302,13 @@
   $("geo").addEventListener("click", () => {
     if (!navigator.geolocation) { toast("Géolocalisation indisponible.", "erreur"); return; }
     navigator.geolocation.getCurrentPosition(
-      (p) => { $("lat").value = p.coords.latitude.toFixed(4); $("lon").value = p.coords.longitude.toFixed(4); toast("Position renseignée."); },
+      async (p) => {
+        $("lat").value = p.coords.latitude.toFixed(4);
+        $("lon").value = p.coords.longitude.toFixed(4);
+        majLieu(p.coords.latitude, p.coords.longitude);
+        try { await sauverConfig(); toast("Position mise à jour."); rafraichirEtat(); }
+        catch (e) { toast(e.message, "erreur"); }
+      },
       () => toast("Position refusée.", "erreur"),
       { enableHighAccuracy: false, timeout: 8000 }
     );
