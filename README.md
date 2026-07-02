@@ -85,15 +85,19 @@ page (lecture de `getUpdates`).
 ## Piloter le bot par message
 
 Une fois « Connecter Telegram » fait (ce qui arme le webhook), tu peux régler
-l'app directement depuis Telegram :
+l'app directement depuis Telegram. **Le plus simple : envoie `/menu`** → le bot
+répond avec la météo du moment et des **boutons** : alertes ON/OFF, seuils en
++1°/−1°, actualiser. Chaque appui met le menu à jour sur place.
+
+Commandes texte (équivalentes) :
 
 | Message | Effet |
 |---------|-------|
-| `/etat` | météo et conseil actuels |
-| `/seuil 30` | règle le seuil « garder fermé » (°C) |
-| `/ideale 25` | règle la température idéale d'ouverture (°C) |
+| `/menu` (ou n'importe quel message) | menu à boutons |
+| `/etat` | météo, conseil et prochaine alerte |
+| `/seuil 30` | alerte « fermer » à partir de 30 °C |
+| `/ideale 25` | alerte « ouvrir » sous 25 °C |
 | `/alertes on` / `/alertes off` | active / coupe les alertes |
-| `/aide` | liste des commandes |
 | 📍 **partage de position** | met à jour le lieu suivi |
 
 **Suivi de position automatique** : une web app ne peut pas suivre le GPS en
