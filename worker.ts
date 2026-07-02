@@ -63,13 +63,16 @@ interface TelegramUpdates {
 // Champs Telegram utilisés par le webhook (sous-ensemble volontairement minimal).
 interface TgLocation { latitude?: number; longitude?: number }
 interface TgMessage { chat?: { id?: number }; text?: string; location?: TgLocation }
-interface TgUpdate { message?: TgMessage; edited_message?: TgMessage }
+interface TgCallbackQuery { id: string; message?: { chat?: { id?: number }; message_id?: number }; data?: string }
+interface TgUpdate { message?: TgMessage; edited_message?: TgMessage; callback_query?: TgCallbackQuery }
 
 // ─────────────────────────── Constantes ───────────────────────────
 
 const CLE_CONFIG = "config";
 const CLE_ETAT = "dernier_etat";
 const CLE_WEBHOOK_SECRET = "webhook_secret"; // jeton partagé avec Telegram pour valider les appels du webhook
+const CLE_WEBHOOK_VERSION = "webhook_version"; // version des réglages du webhook (permet une remise à niveau auto)
+const VERSION_WEBHOOK = "2"; // v2 : reçoit aussi les callback_query (boutons du menu)
 const CHAT_ID_REGEX = /^-?\d{1,20}$/; // id de chat Telegram : entier (négatif possible pour les groupes)
 
 const CONFIG_DEFAUT: ConfigStockee = {
@@ -89,25 +92,55 @@ function determinerEtat(temp: number, c: Config): Etat {
   return "TIEDE";
 }
 
-function construireMessage(temp: number, ressenti: number, etat: Etat, c: Config): Notification {
+/** Message d'alerte explicite : ce qui se passe, quoi faire, et quand arrive la prochaine alerte. */
+function construireMessage(temp: number, ressenti: number, etat: Etat, precedent: Etat | null, c: Config): Notification {
   const t = temp.toFixed(1);
   const r = ressenti.toFixed(1);
+  const meteo = `Il fait ${t}°C dehors (ressenti ${r}°C).`;
   switch (etat) {
     case "IDEAL":
       return {
-        titre: "✅ Ouvre maintenant",
-        corps: `${t}°C dehors (ressenti ${r}°C). Sous les ${c.tempIdealeOuverture}°C visés : ouvre fenêtres et volets pour rafraîchir la pièce.`,
-      };
-    case "TIEDE":
-      return {
-        titre: "🌡️ Ça redescend",
-        corps: `${t}°C dehors (ressenti ${r}°C). Sous ${c.seuilAlerte}°C, mais pas encore les ${c.tempIdealeOuverture}°C idéaux pour ouvrir. Patiente encore un peu.`,
+        titre: "✅ OUVRE TOUT",
+        corps: `${meteo} C'est descendu sous ta température idéale (${c.tempIdealeOuverture}°C).\n→ Ouvre fenêtres et volets pour rafraîchir la maison.\nJe te préviens si ça remonte.`,
       };
     case "CHAUD":
       return {
-        titre: "🔥 Garde fermé",
-        corps: `${t}°C dehors (ressenti ${r}°C). Au-dessus de ${c.seuilAlerte}°C : volets baissés, fenêtres fermées.`,
+        titre: "🔥 FERME TOUT",
+        corps: `${meteo} Ton seuil de ${c.seuilAlerte}°C est dépassé.\n→ Ferme les fenêtres et baisse les volets pour garder le frais.\nJe te préviens dès que ça redescend.`,
       };
+    case "TIEDE":
+      if (precedent === "CHAUD")
+        return {
+          titre: "🌡️ Ça se rafraîchit",
+          corps: `${meteo} C'est repassé sous ${c.seuilAlerte}°C.\n→ Pas encore le moment d'ouvrir : attends que ça descende sous ${c.tempIdealeOuverture}°C. Je te préviens.`,
+        };
+      if (precedent === "IDEAL")
+        return {
+          titre: "🌡️ Ça se réchauffe",
+          corps: `${meteo} C'est remonté au-dessus de ${c.tempIdealeOuverture}°C.\n→ Si tu as ouvert, pense à refermer bientôt. J'alerte si ça atteint ${c.seuilAlerte}°C.`,
+        };
+      return {
+        titre: "🌡️ Température intermédiaire",
+        corps: `${meteo} Entre tes deux seuils (${c.tempIdealeOuverture}°C et ${c.seuilAlerte}°C).\n→ Garde fermé pour l'instant. J'alerte dès que ça passe sous ${c.tempIdealeOuverture}°C.`,
+      };
+  }
+}
+
+/** Conseil court pour /etat et le menu. */
+function conseilTexte(etat: Etat, c: Config): string {
+  switch (etat) {
+    case "CHAUD": return `🔥 Garde tout fermé (${c.seuilAlerte}°C ou plus dehors).`;
+    case "TIEDE": return `🌡️ Garde fermé encore un peu : pas encore sous ${c.tempIdealeOuverture}°C.`;
+    case "IDEAL": return `✅ Ouvre fenêtres et volets : l'air est assez frais.`;
+  }
+}
+
+/** Annonce explicitement le prochain événement qui déclenchera une alerte. */
+function prochaineAlerte(etat: Etat, c: Config): string {
+  switch (etat) {
+    case "CHAUD": return `⏭ Prochaine alerte : quand ça passera sous ${c.seuilAlerte}°C.`;
+    case "TIEDE": return `⏭ Prochaine alerte : sous ${c.tempIdealeOuverture}°C (ouvrir) ou à ${c.seuilAlerte}°C (fermer).`;
+    case "IDEAL": return `⏭ Prochaine alerte : si ça remonte au-dessus de ${c.tempIdealeOuverture}°C.`;
   }
 }
 
@@ -195,16 +228,23 @@ async function recupererMeteo(c: Config): Promise<{ temp: number; ressenti: numb
   return { temp, ressenti };
 }
 
-async function telegramEnvoyer(token: string, chatId: string, texte: string): Promise<void> {
-  const reponse = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+/** Appel générique de l'API Bot Telegram. */
+async function tgApi(token: string, methode: string, corps: Record<string, unknown>): Promise<void> {
+  const reponse = await fetch(`https://api.telegram.org/bot${token}/${methode}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, text: texte }),
+    body: JSON.stringify(corps),
   });
   if (!reponse.ok) {
     const detail = await reponse.text().catch(() => "");
-    throw new Error(`Telegram a répondu ${reponse.status} ${detail}`.trim());
+    throw new Error(`Telegram (${methode}) a répondu ${reponse.status} ${detail}`.trim());
   }
+}
+
+async function telegramEnvoyer(token: string, chatId: string, texte: string, clavier?: unknown): Promise<void> {
+  const corps: Record<string, unknown> = { chat_id: chatId, text: texte };
+  if (clavier) corps.reply_markup = clavier;
+  await tgApi(token, "sendMessage", corps);
 }
 
 async function envoyerNotification(n: Notification, c: Config): Promise<void> {
@@ -247,26 +287,63 @@ async function configurerWebhook(env: Env, token: string, origin: string): Promi
     body: JSON.stringify({
       url: `${origin}/api/telegram/webhook`,
       secret_token: secret,
-      allowed_updates: ["message", "edited_message"],
+      allowed_updates: ["message", "edited_message", "callback_query"],
     }),
   });
   if (!reponse.ok) {
     const detail = await reponse.text().catch(() => "");
     throw new Error(`setWebhook a échoué : ${reponse.status} ${detail}`.trim());
   }
+  await env.ETAT_METEO.put(CLE_WEBHOOK_VERSION, VERSION_WEBHOOK);
 }
 
-function aideTexte(c: Config): string {
-  return [
-    "🌡️ Aération — commandes :",
-    "/etat — météo et conseil actuels",
-    "/seuil 30 — régler le seuil « garder fermé » (°C)",
-    "/ideale 25 — régler la température idéale d'ouverture (°C)",
-    "/alertes on  ·  /alertes off — activer / couper les alertes",
-    "📍 Envoie ta position (ou une position en direct) pour mettre à jour le lieu suivi.",
-    "",
-    `Réglages actuels : ouvrir ≤ ${c.tempIdealeOuverture}°C, fermer ≥ ${c.seuilAlerte}°C, alertes ${c.notificationsActives ? "ON" : "OFF"}.`,
-  ].join("\n");
+/** Clavier du menu : tout se règle en tapant sur les boutons. */
+function clavierMenu(c: ConfigStockee): unknown {
+  return {
+    inline_keyboard: [
+      [
+        { text: "🔄 Actualiser", callback_data: "maj" },
+        { text: c.notificationsActives ? "🔔 Alertes : ON" : "🔕 Alertes : OFF", callback_data: "alertes" },
+      ],
+      [
+        { text: "−1°", callback_data: "ideale-" },
+        { text: `✅ Ouvrir ≤ ${c.tempIdealeOuverture}°`, callback_data: "rien" },
+        { text: "+1°", callback_data: "ideale+" },
+      ],
+      [
+        { text: "−1°", callback_data: "seuil-" },
+        { text: `🔥 Fermer ≥ ${c.seuilAlerte}°`, callback_data: "rien" },
+        { text: "+1°", callback_data: "seuil+" },
+      ],
+    ],
+  };
+}
+
+/** Texte du menu : météo du moment + conseil + prochaine alerte. */
+async function texteMenu(c: Config): Promise<string> {
+  const lignes: string[] = [];
+  try {
+    const { temp, ressenti } = await recupererMeteo(c);
+    const etat = determinerEtat(temp, c);
+    lignes.push(`🌡️ Il fait ${temp.toFixed(1)}°C dehors (ressenti ${ressenti.toFixed(1)}°C)`);
+    lignes.push("");
+    lignes.push(conseilTexte(etat, c));
+    lignes.push(prochaineAlerte(etat, c));
+  } catch {
+    lignes.push("🌡️ Météo indisponible pour le moment (réessaie avec 🔄).");
+  }
+  lignes.push("");
+  lignes.push(c.notificationsActives
+    ? "🔔 Alertes activées — je vérifie la météo toutes les 15 min."
+    : "🔕 Alertes coupées — tape le bouton pour les réactiver.");
+  lignes.push("Règle tes seuils avec les boutons ↓ (ou envoie 📍 ta position).");
+  return lignes.join("\n");
+}
+
+async function envoyerMenu(env: Env, config: Config, chatId: string): Promise<void> {
+  if (!config.telegramToken) return;
+  const { telegramToken, ...stockee } = config;
+  await telegramEnvoyer(config.telegramToken, chatId, await texteMenu(config), clavierMenu(stockee));
 }
 
 /** Applique une modification de réglages venant du bot, valide et confirme (ou explique l'erreur). */
@@ -296,7 +373,7 @@ async function traiterMessage(env: Env, config: Config, msg: TgMessage): Promise
     const lat = Math.round(msg.location.latitude * 1e4) / 1e4;
     const lon = Math.round(msg.location.longitude * 1e4) / 1e4;
     await appliquerModif(env, token, chatId, stockee, { latitude: lat, longitude: lon },
-      `📍 Position mise à jour : ${lat.toFixed(3)}, ${lon.toFixed(3)}.`);
+      `📍 C'est noté : je surveille maintenant la météo à ta nouvelle position (${lat.toFixed(3)}, ${lon.toFixed(3)}).`);
     return;
   }
 
@@ -313,21 +390,27 @@ async function traiterMessage(env: Env, config: Config, msg: TgMessage): Promise
   if (cmd === "seuil" || cmd === "ideale" || cmd === "ideal") {
     const n = Number(arg);
     if (arg === "" || !Number.isFinite(n)) {
-      await telegramEnvoyer(token, chatId, `Indique une valeur, ex. /${cmd === "seuil" ? "seuil 30" : "ideale 25"}`);
+      await telegramEnvoyer(token, chatId, cmd === "seuil"
+        ? "Indique la température, ex. « /seuil 30 » → j'alerte de fermer à partir de 30°C."
+        : "Indique la température, ex. « /ideale 25 » → j'alerte d'ouvrir dès que ça passe sous 25°C.");
       return;
     }
     if (cmd === "seuil")
-      await appliquerModif(env, token, chatId, stockee, { seuilAlerte: n }, `✅ Seuil d'alerte réglé sur ${n}°C.`);
+      await appliquerModif(env, token, chatId, stockee, { seuilAlerte: n },
+        `🔥 OK : je t'alerte de FERMER à partir de ${n}°C.\n(✅ ouvrir ≤ ${stockee.tempIdealeOuverture}°C · 🔥 fermer ≥ ${n}°C)`);
     else
-      await appliquerModif(env, token, chatId, stockee, { tempIdealeOuverture: n }, `✅ Température idéale d'ouverture réglée sur ${n}°C.`);
+      await appliquerModif(env, token, chatId, stockee, { tempIdealeOuverture: n },
+        `✅ OK : je t'alerte d'OUVRIR dès que ça passe sous ${n}°C.\n(✅ ouvrir ≤ ${n}°C · 🔥 fermer ≥ ${stockee.seuilAlerte}°C)`);
     return;
   }
 
   if (cmd === "alertes") {
     const v = arg.toLowerCase();
-    if (v !== "on" && v !== "off") { await telegramEnvoyer(token, chatId, "Utilise /alertes on ou /alertes off."); return; }
+    if (v !== "on" && v !== "off") { await telegramEnvoyer(token, chatId, "Utilise « /alertes on » ou « /alertes off » (ou le bouton du /menu)."); return; }
     await appliquerModif(env, token, chatId, stockee, { notificationsActives: v === "on" },
-      v === "on" ? "🔔 Alertes activées." : "🔕 Alertes désactivées.");
+      v === "on"
+        ? "🔔 Alertes activées — je vérifie la météo toutes les 15 min et je te préviens au bon moment."
+        : "🔕 Alertes coupées — je ne t'enverrai plus rien. Tape « /alertes on » pour reprendre.");
     return;
   }
 
@@ -335,17 +418,70 @@ async function traiterMessage(env: Env, config: Config, msg: TgMessage): Promise
     try {
       const { temp, ressenti } = await recupererMeteo(config);
       const etat = determinerEtat(temp, config);
-      const libelle = etat === "CHAUD" ? "🔥 Garde fermé" : etat === "TIEDE" ? "🌡️ Ça redescend" : "✅ Ouvre maintenant";
       await telegramEnvoyer(token, chatId,
-        `${libelle}\n${temp.toFixed(1)}°C (ressenti ${ressenti.toFixed(1)}°C)\nOuvrir ≤ ${config.tempIdealeOuverture}°C · fermer ≥ ${config.seuilAlerte}°C.`);
+        `🌡️ Il fait ${temp.toFixed(1)}°C dehors (ressenti ${ressenti.toFixed(1)}°C)\n${conseilTexte(etat, config)}\n${prochaineAlerte(etat, config)}`);
     } catch {
-      await telegramEnvoyer(token, chatId, "Météo indisponible pour le moment.");
+      await telegramEnvoyer(token, chatId, "Météo indisponible pour le moment, réessaie dans une minute.");
     }
     return;
   }
 
-  // /start, /aide, /help ou commande inconnue -> aide.
-  await telegramEnvoyer(token, chatId, aideTexte(config));
+  // /start, /menu, /aide, /help ou n'importe quel autre message -> le menu à boutons.
+  await envoyerMenu(env, config, chatId);
+}
+
+/** Traite un appui sur un bouton du menu : applique, confirme, et met le menu à jour sur place. */
+async function traiterCallback(env: Env, config: Config, cb: TgCallbackQuery): Promise<void> {
+  const token = config.telegramToken;
+  if (!token || typeof cb.message?.chat?.id !== "number") return;
+  const chatId = String(cb.message.chat.id);
+  const { telegramToken, ...stockee } = config;
+
+  let modif: Partial<ConfigStockee> | null = null;
+  let confirmation = "";
+  switch (cb.data) {
+    case "alertes":
+      modif = { notificationsActives: !stockee.notificationsActives };
+      confirmation = stockee.notificationsActives ? "🔕 Alertes coupées" : "🔔 Alertes activées";
+      break;
+    case "ideale-": modif = { tempIdealeOuverture: stockee.tempIdealeOuverture - 1 }; break;
+    case "ideale+": modif = { tempIdealeOuverture: stockee.tempIdealeOuverture + 1 }; break;
+    case "seuil-": modif = { seuilAlerte: stockee.seuilAlerte - 1 }; break;
+    case "seuil+": modif = { seuilAlerte: stockee.seuilAlerte + 1 }; break;
+    case "maj": confirmation = "Actualisé"; break;
+    default:
+      await tgApi(token, "answerCallbackQuery", { callback_query_id: cb.id }).catch(() => {});
+      return;
+  }
+
+  if (modif) {
+    const v = validerConfig({ ...stockee, ...modif });
+    if (!v.ok) {
+      // Réglage refusé (ex. idéale >= seuil) : on explique dans la petite bulle, sans rien changer.
+      await tgApi(token, "answerCallbackQuery", { callback_query_id: cb.id, text: "⚠ " + v.erreur, show_alert: true }).catch(() => {});
+      return;
+    }
+    await ecrireConfig(env, v.valeur);
+    if (!confirmation) {
+      confirmation = modif.tempIdealeOuverture !== undefined
+        ? `✅ Ouvrir ≤ ${v.valeur.tempIdealeOuverture}°C`
+        : `🔥 Fermer ≥ ${v.valeur.seuilAlerte}°C`;
+    }
+  }
+
+  await tgApi(token, "answerCallbackQuery", { callback_query_id: cb.id, text: confirmation }).catch(() => {});
+
+  // Menu mis à jour sur place (texte + boutons). Telegram refuse une édition identique : on ignore.
+  const configMaj = await lireConfig(env);
+  const { telegramToken: _t, ...stockeeMaj } = configMaj;
+  if (typeof cb.message.message_id === "number") {
+    await tgApi(token, "editMessageText", {
+      chat_id: chatId,
+      message_id: cb.message.message_id,
+      text: await texteMenu(configMaj),
+      reply_markup: clavierMenu(stockeeMaj),
+    }).catch(() => {});
+  }
 }
 
 /** Endpoint appelé par Telegram à chaque update. Toujours répondre 200 (sinon Telegram réessaie). */
@@ -357,8 +493,27 @@ async function gererWebhook(request: Request, env: Env): Promise<Response> {
   if (!secretAttendu || request.headers.get("X-Telegram-Bot-Api-Secret-Token") !== secretAttendu)
     return new Response("forbidden", { status: 403 });
 
+  // Mise à niveau silencieuse : si les réglages du webhook datent d'une version
+  // précédente (ex. sans les boutons), on les réenregistre au premier message reçu.
+  const version = await env.ETAT_METEO.get(CLE_WEBHOOK_VERSION);
+  if (version !== VERSION_WEBHOOK) {
+    try { await configurerWebhook(env, config.telegramToken, new URL(request.url).origin); }
+    catch (e) { console.warn("Remise à niveau webhook :", e instanceof Error ? e.message : e); }
+  }
+
   let update: TgUpdate;
   try { update = (await request.json()) as TgUpdate; } catch { return json({ ok: true }); }
+
+  // Appui sur un bouton du menu.
+  if (update.callback_query) {
+    const cb = update.callback_query;
+    if (config.telegramChatId && String(cb.message?.chat?.id) === config.telegramChatId) {
+      try { await traiterCallback(env, config, cb); }
+      catch (e) { console.error("Webhook (bouton) :", e instanceof Error ? e.message : e); }
+    }
+    return json({ ok: true });
+  }
+
   const msg = update.message ?? update.edited_message;
   if (!msg) return json({ ok: true });
 
@@ -389,7 +544,7 @@ export default {
       if (etatActuel !== etatPrecedent) {
         // On notifie d'abord : si l'envoi échoue, l'état n'est pas mémorisé et
         // la transition sera retentée au prochain cycle.
-        await envoyerNotification(construireMessage(temp, ressenti, etatActuel, config), config);
+        await envoyerNotification(construireMessage(temp, ressenti, etatActuel, etatPrecedent, config), config);
         await env.ETAT_METEO.put(CLE_ETAT, etatActuel);
         console.log(`Transition ${etatPrecedent ?? "INIT"} -> ${etatActuel} (${temp}°C).`);
       } else {
@@ -488,7 +643,10 @@ export default {
         if (!config.telegramChatId) return json({ erreur: "Connecte Telegram d'abord (bouton « Connecter Telegram »)." }, 400);
         try {
           await envoyerNotification(
-            { titre: "🔔 Test", corps: "Notification de test — si tu lis ça, tout fonctionne." },
+            {
+              titre: "🔔 Test réussi — les notifications fonctionnent !",
+              corps: `Je te préviendrai :\n✅ d'OUVRIR quand il fera ${config.tempIdealeOuverture}°C ou moins\n🔥 de FERMER quand il fera ${config.seuilAlerte}°C ou plus\nEnvoie-moi /menu pour tout régler avec des boutons.`,
+            },
             config,
           );
           return json({ ok: true });
