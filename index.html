@@ -207,6 +207,8 @@
   const TMIN = 10, TMAX = 40;            // bornes de la jauge
   let chatId = "";                       // destination Telegram (id de chat), gérée hors formulaire
   let tokenConfigure = false;            // le worker voit-il le secret TELEGRAM_TOKEN ?
+  let bulletinActif = false;             // réglages du bulletin du matin (pilotés depuis le bot),
+  let bulletinHeure = 7;                 // préservés tels quels quand on enregistre depuis la page
 
   // ── Réseau ────────────────────────────────────────────────
   // Plus d'authentification : l'API est en accès libre (mot de passe désactivé).
@@ -226,6 +228,8 @@
     $("notif").checked = !!c.notificationsActives;
     chatId = c.telegramChatId || "";
     tokenConfigure = !!c.telegramTokenConfigure;
+    bulletinActif = !!c.bulletinActif;
+    bulletinHeure = Number.isInteger(c.bulletinHeure) ? c.bulletinHeure : 7;
     $("lat").value = c.latitude;
     $("lon").value = c.longitude;
     $("ideale").value = c.tempIdealeOuverture;
@@ -259,6 +263,8 @@
       longitude: Number($("lon").value),
       tempIdealeOuverture: Number($("ideale").value),
       seuilAlerte: Number($("seuil").value),
+      bulletinActif: bulletinActif,
+      bulletinHeure: bulletinHeure,
     };
   }
   async function sauverConfig() {

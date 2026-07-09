@@ -98,7 +98,27 @@ Commandes texte (équivalentes) :
 | `/seuil 30` | alerte « fermer » à partir de 30 °C |
 | `/ideale 25` | alerte « ouvrir » sous 25 °C |
 | `/alertes on` / `/alertes off` | active / coupe les alertes |
+| `/matin` | envoie le bulletin d'infos tout de suite |
+| `/matin on` / `/matin off` / `/matin 8` | bulletin quotidien automatique (à l'heure choisie) |
+| `/carburant` | stations les moins chères à 15 km |
 | 📍 **partage de position** | met à jour le lieu suivi |
+
+## Bulletin du matin
+
+Un résumé quotidien envoyé sur Telegram à l'heure choisie (défaut 7 h, heure de
+Paris), composé de rubriques **indépendantes** (une source en panne est
+simplement omise) :
+
+- **🌦️ Météo du jour** : min/max, pluie, rafales + alertes simples calculées
+  (gel, forte chaleur, vent fort, pluie très probable) — Open-Meteo ;
+- **🗞️ Dordogne** : les 3 derniers titres de Sud Ouest (flux RSS) ;
+- **📰 France** : les 3 derniers titres de franceinfo ;
+- **⚽ Sport** : les 3 derniers titres de L'Équipe ;
+- **⛽ Carburant** : les prix les moins chers dans un rayon de 15 km (open data
+  officiel `data.economie.gouv.fr`).
+
+Les sources se règlent dans la constante `FLUX_ACTUS` de `worker.ts` (ajouter ou
+remplacer un flux RSS suffit).
 
 **Suivi de position automatique** : une web app ne peut pas suivre le GPS en
 arrière-plan. Pour un suivi « auto », partage ta **position en direct** avec le

@@ -39,6 +39,8 @@ interface ConfigStockee {
   tempIdealeOuverture: number;
   telegramChatId: string;    // destination des notifications (id de chat Telegram)
   notificationsActives: boolean;
+  bulletinActif: boolean;    // bulletin d'infos du matin (météo + actus + carburant)
+  bulletinHeure: number;     // heure d'envoi du bulletin (heure de Paris, 0-23)
 }
 
 /** Config d'exécution = réglages + token Telegram (non éditable, vient du secret). */
@@ -82,7 +84,18 @@ const CONFIG_DEFAUT: ConfigStockee = {
   tempIdealeOuverture: 25,
   telegramChatId: "",
   notificationsActives: false,
+  bulletinActif: false,
+  bulletinHeure: 7,
 };
+
+const CLE_BULLETIN = "dernier_bulletin"; // date (YYYY-MM-DD, heure de Paris) du dernier bulletin envoyé
+
+/** Rubriques d'actualités du bulletin (flux RSS publics). Une rubrique en panne est simplement omise. */
+const FLUX_ACTUS: Array<{ titre: string; url: string; max: number }> = [
+  { titre: "🗞️ Dordogne — Sud Ouest", url: "https://www.sudouest.fr/dordogne/rss.xml", max: 3 },
+  { titre: "📰 France — franceinfo", url: "https://www.francetvinfo.fr/titres.rss", max: 3 },
+  { titre: "⚽ Sport — L'Équipe", url: "https://www.lequipe.fr/rss/actu_rss.xml", max: 3 },
+];
 
 // ─────────────────── Fonctions pures (testables) ───────────────────
 
@@ -176,6 +189,15 @@ function validerConfig(brut: unknown): { ok: true; valeur: ConfigStockee } | { o
   if (chatId.length > 0 && !CHAT_ID_REGEX.test(chatId))
     return { ok: false, erreur: "Destination Telegram invalide (id de chat numérique attendu)." };
 
+  // Champs du bulletin, optionnels (absents des anciennes configs) : défauts sûrs.
+  const bulletinActif = typeof b.bulletinActif === "boolean" ? b.bulletinActif : false;
+  let bulletinHeure = 7;
+  if (b.bulletinHeure !== undefined) {
+    if (!estNombreFini(b.bulletinHeure) || !Number.isInteger(b.bulletinHeure) || b.bulletinHeure < 0 || b.bulletinHeure > 23)
+      return { ok: false, erreur: "Heure du bulletin invalide (0 à 23)." };
+    bulletinHeure = b.bulletinHeure;
+  }
+
   return {
     ok: true,
     valeur: {
@@ -185,6 +207,8 @@ function validerConfig(brut: unknown): { ok: true; valeur: ConfigStockee } | { o
       tempIdealeOuverture: b.tempIdealeOuverture,
       telegramChatId: chatId,
       notificationsActives: b.notificationsActives,
+      bulletinActif,
+      bulletinHeure,
     },
   };
 }
@@ -241,9 +265,10 @@ async function tgApi(token: string, methode: string, corps: Record<string, unkno
   }
 }
 
-async function telegramEnvoyer(token: string, chatId: string, texte: string, clavier?: unknown): Promise<void> {
+async function telegramEnvoyer(token: string, chatId: string, texte: string, clavier?: unknown, html = false): Promise<void> {
   const corps: Record<string, unknown> = { chat_id: chatId, text: texte };
   if (clavier) corps.reply_markup = clavier;
+  if (html) { corps.parse_mode = "HTML"; corps.disable_web_page_preview = true; }
   await tgApi(token, "sendMessage", corps);
 }
 
@@ -270,6 +295,184 @@ async function detecterChatTelegram(c: Config): Promise<{ chatId: string; nom: s
     }
   }
   return null;
+}
+
+// ─────────────────────── Bulletin du matin (actus + météo + carburant) ───────────────────────
+
+/** Décode les entités XML/HTML courantes des titres de flux RSS. */
+function decoderEntites(s: string): string {
+  return s
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, n) => String.fromCodePoint(parseInt(n, 16)))
+    .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&nbsp;/g, " ");
+}
+
+/** Échappe le texte inséré dans un message Telegram en mode HTML. */
+function echapperHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/** Extraction minimaliste des <item> d'un flux RSS (suffisant, pas de parseur XML dans Workers). */
+function extraireItemsRss(xml: string, max: number): Array<{ titre: string; lien: string }> {
+  const items: Array<{ titre: string; lien: string }> = [];
+  const blocs = xml.split(/<item[\s>]/).slice(1);
+  for (const bloc of blocs) {
+    const t = /<title>\s*(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?\s*<\/title>/.exec(bloc);
+    const l = /<link>\s*(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?\s*<\/link>/.exec(bloc);
+    if (t && l) {
+      let titre = decoderEntites(t[1].trim()).replace(/\s+/g, " ");
+      if (titre.length > 110) titre = titre.slice(0, 107) + "…";
+      const lien = l[1].trim();
+      if (titre && lien.startsWith("http")) items.push({ titre, lien });
+    }
+    if (items.length >= max) break;
+  }
+  return items;
+}
+
+/** Charge une rubrique RSS et la formate en lignes HTML Telegram. Erreur -> null (rubrique omise). */
+async function chargerRubrique(flux: { titre: string; url: string; max: number }): Promise<string | null> {
+  try {
+    const reponse = await fetch(flux.url, {
+      signal: AbortSignal.timeout(8000),
+      headers: { "User-Agent": "Mozilla/5.0 (bulletin-aeration; usage personnel)" },
+    });
+    if (!reponse.ok) return null;
+    const items = extraireItemsRss(await reponse.text(), flux.max);
+    if (items.length === 0) return null;
+    const lignes = items.map((i) => `• <a href="${i.lien}">${echapperHtml(i.titre)}</a>`);
+    return `<b>${flux.titre}</b>\n${lignes.join("\n")}`;
+  } catch {
+    return null;
+  }
+}
+
+interface OpenMeteoJour {
+  daily?: {
+    temperature_2m_min?: number[];
+    temperature_2m_max?: number[];
+    precipitation_probability_max?: number[];
+    wind_gusts_10m_max?: number[];
+  };
+}
+
+/** Météo du jour (min/max, pluie, rafales) + alertes simples calculées. Erreur -> null. */
+async function rubriqueMeteoJour(c: Config): Promise<string | null> {
+  try {
+    const url = new URL("https://api.open-meteo.com/v1/forecast");
+    url.searchParams.set("latitude", String(c.latitude));
+    url.searchParams.set("longitude", String(c.longitude));
+    url.searchParams.set("daily", "temperature_2m_min,temperature_2m_max,precipitation_probability_max,wind_gusts_10m_max");
+    url.searchParams.set("timezone", "Europe/Paris");
+    url.searchParams.set("forecast_days", "1");
+    const reponse = await fetch(url.toString(), { signal: AbortSignal.timeout(8000) });
+    if (!reponse.ok) return null;
+    const d = ((await reponse.json()) as OpenMeteoJour).daily;
+    const min = d?.temperature_2m_min?.[0];
+    const max = d?.temperature_2m_max?.[0];
+    const pluie = d?.precipitation_probability_max?.[0];
+    const rafales = d?.wind_gusts_10m_max?.[0];
+    if (typeof min !== "number" || typeof max !== "number") return null;
+
+    const lignes = [`<b>🌦️ Météo du jour</b>`, `Min ${min.toFixed(0)}° / Max ${max.toFixed(0)}°` +
+      (typeof pluie === "number" ? ` · pluie ${pluie.toFixed(0)} %` : "") +
+      (typeof rafales === "number" ? ` · rafales ${rafales.toFixed(0)} km/h` : "")];
+    // Alertes simples, calculées localement (pas d'API à clé nécessaire).
+    if (max >= c.seuilAlerte) lignes.push(`🔥 Il fera chaud (${max.toFixed(0)}°) : aère tôt, ferme avant que ça monte.`);
+    if (min <= 0) lignes.push(`❄️ Gel possible (${min.toFixed(0)}°) : protège plantes et canalisations.`);
+    if (typeof rafales === "number" && rafales >= 60) lignes.push(`💨 Vent fort prévu (${rafales.toFixed(0)} km/h) : range ce qui s'envole.`);
+    if (typeof pluie === "number" && pluie >= 70) lignes.push(`🌧️ Pluie très probable : pense au linge et aux fenêtres.`);
+    return lignes.join("\n");
+  } catch {
+    return null;
+  }
+}
+
+interface OdsCarburant {
+  records?: Array<{ fields?: Record<string, unknown> }>;
+}
+
+/** Station la moins chère à ~15 km (open data officiel des prix des carburants). Erreur -> null. */
+async function rubriqueCarburant(c: Config): Promise<string | null> {
+  try {
+    const url = new URL("https://data.economie.gouv.fr/api/records/1.0/search/");
+    url.searchParams.set("dataset", "prix-des-carburants-en-france-flux-instantane-v2");
+    url.searchParams.set("geofilter.distance", `${c.latitude},${c.longitude},15000`);
+    url.searchParams.set("rows", "60");
+    const reponse = await fetch(url.toString(), { signal: AbortSignal.timeout(8000) });
+    if (!reponse.ok) return null;
+    const data = (await reponse.json()) as OdsCarburant;
+    const records = data.records ?? [];
+
+    // Le champ des prix varie selon les versions du jeu de données : on lit large.
+    const meilleurs = new Map<string, { prix: number; ville: string }>();
+    for (const r of records) {
+      const f = r.fields ?? {};
+      const ville = typeof f.ville === "string" ? f.ville : "";
+      const bruts: Array<{ nom?: string; valeur?: unknown }> = [];
+      if (typeof f.prix === "string") {
+        try {
+          const p = JSON.parse(f.prix) as unknown;
+          for (const e of Array.isArray(p) ? p : [p]) {
+            const o = e as Record<string, unknown>;
+            bruts.push({ nom: String(o["@nom"] ?? o["nom"] ?? ""), valeur: o["@valeur"] ?? o["valeur"] });
+          }
+        } catch { /* format inattendu : station ignorée */ }
+      }
+      for (const carb of ["Gazole", "SP95", "E10", "SP98"]) {
+        const direct = f[`${carb.toLowerCase()}_prix`];
+        if (direct !== undefined) bruts.push({ nom: carb, valeur: direct });
+      }
+      for (const b of bruts) {
+        const nom = (b.nom ?? "").trim();
+        const prix = Number(b.valeur);
+        if (!nom || !Number.isFinite(prix) || prix <= 0) continue;
+        const actuel = meilleurs.get(nom);
+        if (!actuel || prix < actuel.prix) meilleurs.set(nom, { prix, ville });
+      }
+    }
+    if (meilleurs.size === 0) return null;
+
+    const ordre = ["Gazole", "E10", "SP95", "SP98", "E85", "GPLc"];
+    const lignes = ordre
+      .filter((n) => meilleurs.has(n))
+      .slice(0, 3)
+      .map((n) => {
+        const m = meilleurs.get(n)!;
+        return `• ${n} : <b>${m.prix.toFixed(2)} €</b>${m.ville ? " — " + echapperHtml(m.ville) : ""}`;
+      });
+    if (lignes.length === 0) return null;
+    return `<b>⛽ Carburant le moins cher (15 km)</b>\n${lignes.join("\n")}`;
+  } catch {
+    return null;
+  }
+}
+
+/** Assemble le bulletin : chaque rubrique est indépendante, une panne = rubrique omise. */
+async function construireBulletin(c: Config): Promise<string> {
+  const dateFr = new Intl.DateTimeFormat("fr-FR", {
+    weekday: "long", day: "numeric", month: "long", timeZone: "Europe/Paris",
+  }).format(new Date());
+
+  const rubriques = await Promise.allSettled([
+    rubriqueMeteoJour(c),
+    ...FLUX_ACTUS.map((f) => chargerRubrique(f)),
+    rubriqueCarburant(c),
+  ]);
+  const blocs = rubriques
+    .map((r) => (r.status === "fulfilled" ? r.value : null))
+    .filter((b): b is string => Boolean(b));
+
+  const entete = `<b>☀️ Bulletin du ${echapperHtml(dateFr)}</b>`;
+  if (blocs.length === 0)
+    return `${entete}\n\nLes sources d'infos ne répondent pas pour le moment — réessaie avec /matin dans quelques minutes.`;
+  return [entete, ...blocs].join("\n\n");
+}
+
+async function envoyerBulletin(config: Config, chatId: string): Promise<void> {
+  if (!config.telegramToken) return;
+  await telegramEnvoyer(config.telegramToken, chatId, await construireBulletin(config), undefined, true);
 }
 
 // ─────────────────────── Bot Telegram : webhook & commandes ───────────────────────
@@ -315,6 +518,10 @@ function clavierMenu(c: ConfigStockee): unknown {
         { text: `🔥 Fermer ≥ ${c.seuilAlerte}°`, callback_data: "rien" },
         { text: "+1°", callback_data: "seuil+" },
       ],
+      [
+        { text: "🗞️ Bulletin infos", callback_data: "bulletin" },
+        { text: c.bulletinActif ? `☀️ Chaque jour ${c.bulletinHeure}h : ON` : "🌙 Bulletin auto : OFF", callback_data: "matinToggle" },
+      ],
     ],
   };
 }
@@ -336,7 +543,7 @@ async function texteMenu(c: Config): Promise<string> {
   lignes.push(c.notificationsActives
     ? "🔔 Alertes activées — je vérifie la météo toutes les 15 min."
     : "🔕 Alertes coupées — tape le bouton pour les réactiver.");
-  lignes.push("Règle tes seuils avec les boutons ↓ (ou envoie 📍 ta position).");
+  lignes.push("Règle tout avec les boutons ↓ · envoie 📍 ta position pour changer de lieu.");
   return lignes.join("\n");
 }
 
@@ -414,6 +621,38 @@ async function traiterMessage(env: Env, config: Config, msg: TgMessage): Promise
     return;
   }
 
+  if (cmd === "matin" || cmd === "bulletin" || cmd === "infos" || cmd === "news") {
+    const v = arg.toLowerCase();
+    if (cmd === "matin" && (v === "on" || v === "off")) {
+      await appliquerModif(env, token, chatId, stockee, { bulletinActif: v === "on" },
+        v === "on"
+          ? `☀️ Bulletin du matin activé — tu le recevras chaque jour vers ${stockee.bulletinHeure} h (change l'heure avec « /matin 8 »).`
+          : "🌙 Bulletin du matin désactivé. Tape « /matin on » pour le reprendre.");
+      return;
+    }
+    if (cmd === "matin" && v !== "") {
+      const h = Number(v.replace("h", ""));
+      if (!Number.isInteger(h) || h < 0 || h > 23) {
+        await telegramEnvoyer(token, chatId, "Indique une heure entière, ex. « /matin 8 » pour le recevoir à 8 h.");
+        return;
+      }
+      await appliquerModif(env, token, chatId, stockee, { bulletinActif: true, bulletinHeure: h },
+        `☀️ OK : bulletin chaque jour vers ${h} h (heure de Paris).`);
+      return;
+    }
+    // /matin (sans argument), /infos, /bulletin -> envoi immédiat.
+    await envoyerBulletin(config, chatId);
+    return;
+  }
+
+  if (cmd === "carburant" || cmd === "essence") {
+    const rubrique = await rubriqueCarburant(config);
+    await telegramEnvoyer(token, chatId,
+      rubrique ?? "⛽ Prix des carburants indisponibles pour le moment, réessaie dans quelques minutes.",
+      undefined, rubrique !== null);
+    return;
+  }
+
   if (cmd === "etat" || cmd === "meteo") {
     try {
       const { temp, ressenti } = await recupererMeteo(config);
@@ -449,6 +688,18 @@ async function traiterCallback(env: Env, config: Config, cb: TgCallbackQuery): P
     case "seuil-": modif = { seuilAlerte: stockee.seuilAlerte - 1 }; break;
     case "seuil+": modif = { seuilAlerte: stockee.seuilAlerte + 1 }; break;
     case "maj": confirmation = "Actualisé"; break;
+    case "bulletin":
+      // Envoi du bulletin en nouveau message : on accuse réception tout de suite
+      // (la collecte des sources peut prendre quelques secondes), sans toucher au menu.
+      await tgApi(token, "answerCallbackQuery", { callback_query_id: cb.id, text: "Je prépare le bulletin…" }).catch(() => {});
+      await envoyerBulletin(config, chatId).catch(async () => {
+        await telegramEnvoyer(token, chatId, "Impossible de préparer le bulletin, réessaie dans quelques minutes.").catch(() => {});
+      });
+      return;
+    case "matinToggle":
+      modif = { bulletinActif: !stockee.bulletinActif };
+      confirmation = stockee.bulletinActif ? "🌙 Bulletin auto coupé" : `☀️ Bulletin chaque jour vers ${stockee.bulletinHeure} h`;
+      break;
     default:
       await tgApi(token, "answerCallbackQuery", { callback_query_id: cb.id }).catch(() => {});
       return;
@@ -530,28 +781,51 @@ const json = (data: unknown, status = 200): Response => Response.json(data, { st
 // ─────────────────────── Handlers Worker ───────────────────────
 
 export default {
-  /** Cron : notifie seulement sur transition d'état, et seulement si activé. */
+  /** Cron : alertes d'aération (sur transition d'état) + bulletin du matin. Blocs indépendants. */
   async scheduled(_controller: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
+    const config = await lireConfig(env);
+    if (!config.telegramToken || !config.telegramChatId) { console.log("Telegram non configuré : cycle ignoré."); return; }
+
+    // 1) Alertes d'aération.
     try {
-      const config = await lireConfig(env);
-      if (!config.notificationsActives) { console.log("Notifications désactivées : cycle ignoré."); return; }
-      if (!config.telegramToken || !config.telegramChatId) { console.log("Telegram non configuré : cycle ignoré."); return; }
+      if (config.notificationsActives) {
+        const { temp, ressenti } = await recupererMeteo(config);
+        const etatActuel = determinerEtat(temp, config);
+        const etatPrecedent = (await env.ETAT_METEO.get(CLE_ETAT)) as Etat | null;
 
-      const { temp, ressenti } = await recupererMeteo(config);
-      const etatActuel = determinerEtat(temp, config);
-      const etatPrecedent = (await env.ETAT_METEO.get(CLE_ETAT)) as Etat | null;
-
-      if (etatActuel !== etatPrecedent) {
-        // On notifie d'abord : si l'envoi échoue, l'état n'est pas mémorisé et
-        // la transition sera retentée au prochain cycle.
-        await envoyerNotification(construireMessage(temp, ressenti, etatActuel, etatPrecedent, config), config);
-        await env.ETAT_METEO.put(CLE_ETAT, etatActuel);
-        console.log(`Transition ${etatPrecedent ?? "INIT"} -> ${etatActuel} (${temp}°C).`);
+        if (etatActuel !== etatPrecedent) {
+          // On notifie d'abord : si l'envoi échoue, l'état n'est pas mémorisé et
+          // la transition sera retentée au prochain cycle.
+          await envoyerNotification(construireMessage(temp, ressenti, etatActuel, etatPrecedent, config), config);
+          await env.ETAT_METEO.put(CLE_ETAT, etatActuel);
+          console.log(`Transition ${etatPrecedent ?? "INIT"} -> ${etatActuel} (${temp}°C).`);
+        } else {
+          console.log(`État inchangé (${etatActuel}, ${temp}°C).`);
+        }
       } else {
-        console.log(`État inchangé (${etatActuel}, ${temp}°C).`);
+        console.log("Alertes d'aération désactivées.");
       }
     } catch (e) {
       console.error("Échec du cycle météo :", e instanceof Error ? e.message : e);
+    }
+
+    // 2) Bulletin du matin : au premier passage du cron dans l'heure choisie, une fois par jour.
+    try {
+      if (config.bulletinActif) {
+        const maintenant = new Date();
+        const heureParis = Number(new Intl.DateTimeFormat("fr-FR", { timeZone: "Europe/Paris", hour: "2-digit", hour12: false }).format(maintenant));
+        const jourParis = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Paris" }).format(maintenant); // YYYY-MM-DD
+        if (heureParis === config.bulletinHeure) {
+          const dernier = await env.ETAT_METEO.get(CLE_BULLETIN);
+          if (dernier !== jourParis) {
+            await envoyerBulletin(config, config.telegramChatId);
+            await env.ETAT_METEO.put(CLE_BULLETIN, jourParis);
+            console.log(`Bulletin envoyé (${jourParis} ${heureParis}h).`);
+          }
+        }
+      }
+    } catch (e) {
+      console.error("Échec du bulletin :", e instanceof Error ? e.message : e);
     }
   },
 
