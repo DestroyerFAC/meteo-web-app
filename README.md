@@ -82,6 +82,19 @@ page (lecture de `getUpdates`).
 5. Active **« Recevoir des alertes »**, règle tes seuils, **Enregistre**.
 6. (Optionnel) « Ajouter à l'écran d'accueil » depuis le navigateur.
 
+## Boutons du bot
+
+Trois façons de piloter, sans rien taper :
+
+1. **Clavier permanent** — quatre boutons affichés sous le champ de saisie
+   (`🌡️ Météo`, `🗞️ Bulletin`, `⚙️ Réglages`, `⛽ Carburant`). Un appui envoie le
+   libellé, que le worker traduit en commande (`BOUTONS_TEXTE` dans `worker.ts`).
+   Installé par `/start`, ou automatiquement à la première mise à niveau du webhook.
+2. **Bouton ☰** à côté du champ de saisie — liste des commandes avec description,
+   déclarée via `setMyCommands` + `setChatMenuButton` dans `configurerWebhook`.
+3. **Menu inline** (`/menu` ou `⚙️ Réglages`) — boutons de réglage sous le message,
+   qui se met à jour sur place à chaque appui.
+
 ## Piloter le bot par message
 
 Une fois « Connecter Telegram » fait (ce qui arme le webhook), tu peux régler
