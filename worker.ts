@@ -74,7 +74,7 @@ const CLE_CONFIG = "config";
 const CLE_ETAT = "dernier_etat";
 const CLE_WEBHOOK_SECRET = "webhook_secret"; // jeton partagé avec Telegram pour valider les appels du webhook
 const CLE_WEBHOOK_VERSION = "webhook_version"; // version des réglages du webhook (permet une remise à niveau auto)
-const VERSION_WEBHOOK = "2"; // v2 : reçoit aussi les callback_query (boutons du menu)
+const VERSION_WEBHOOK = "3"; // v2 : callback_query (menu inline) · v3 : commandes ☰ + clavier permanent
 const CHAT_ID_REGEX = /^-?\d{1,20}$/; // id de chat Telegram : entier (négatif possible pour les groupes)
 
 const CONFIG_DEFAUT: ConfigStockee = {
@@ -497,7 +497,47 @@ async function configurerWebhook(env: Env, token: string, origin: string): Promi
     const detail = await reponse.text().catch(() => "");
     throw new Error(`setWebhook a échoué : ${reponse.status} ${detail}`.trim());
   }
+  // Liste déroulante du bouton « ☰ Menu » à côté du champ de saisie : plus besoin
+  // de connaître les commandes, Telegram les propose et les insère au clic.
+  await tgApi(token, "setMyCommands", {
+    commands: [
+      { command: "menu", description: "⚙️ Réglages : alertes et seuils" },
+      { command: "etat", description: "🌡️ Météo et conseil du moment" },
+      { command: "matin", description: "🗞️ Bulletin d'infos maintenant" },
+      { command: "carburant", description: "⛽ Prix les moins chers à 15 km" },
+      { command: "alertes", description: "🔔 Activer / couper les alertes (on, off)" },
+      { command: "seuil", description: "🔥 Température pour fermer (ex. 30)" },
+      { command: "ideale", description: "✅ Température pour ouvrir (ex. 25)" },
+    ],
+  }).catch(() => {}); // confort : un échec ici ne doit pas casser la connexion
+  await tgApi(token, "setChatMenuButton", { menu_button: { type: "commands" } }).catch(() => {});
   await env.ETAT_METEO.put(CLE_WEBHOOK_VERSION, VERSION_WEBHOOK);
+}
+
+// Clavier permanent : remplace le clavier alphabétique par des boutons toujours
+// visibles. Un appui envoie le libellé comme message texte -> voir BOUTONS_TEXTE.
+const BTN_METEO = "🌡️ Météo";
+const BTN_BULLETIN = "🗞️ Bulletin";
+const BTN_REGLAGES = "⚙️ Réglages";
+const BTN_CARBURANT = "⛽ Carburant";
+
+/** Libellé du clavier permanent -> commande interne équivalente. */
+const BOUTONS_TEXTE: Record<string, string> = {
+  [BTN_METEO]: "etat",
+  [BTN_BULLETIN]: "matin",
+  [BTN_REGLAGES]: "menu",
+  [BTN_CARBURANT]: "carburant",
+};
+
+function clavierPermanent(): unknown {
+  return {
+    keyboard: [
+      [{ text: BTN_METEO }, { text: BTN_BULLETIN }],
+      [{ text: BTN_REGLAGES }, { text: BTN_CARBURANT }],
+    ],
+    resize_keyboard: true, // hauteur ajustée au contenu, ne mange pas l'écran
+    is_persistent: true,   // reste affiché au lieu de se replier après usage
+  };
 }
 
 /** Clavier du menu : tout se règle en tapant sur les boutons. */
@@ -584,7 +624,7 @@ async function traiterMessage(env: Env, config: Config, msg: TgMessage): Promise
     return;
   }
 
-  // 2) Commande texte.
+  // 2) Commande texte, ou appui sur un bouton du clavier permanent (arrive comme du texte).
   const texte = (msg.text ?? "").trim();
   if (!texte) return;
   const morceaux = texte.split(/\s+/);
@@ -592,7 +632,9 @@ async function traiterMessage(env: Env, config: Config, msg: TgMessage): Promise
   if (cmd.startsWith("/")) cmd = cmd.slice(1);
   const arobase = cmd.indexOf("@"); // ex. /seuil@MonBot dans un groupe
   if (arobase >= 0) cmd = cmd.slice(0, arobase);
-  const arg = morceaux.slice(1).join(" ").replace(",", ".").trim();
+  let arg = morceaux.slice(1).join(" ").replace(",", ".").trim();
+  const bouton = BOUTONS_TEXTE[texte];
+  if (bouton) { cmd = bouton; arg = ""; }
 
   if (cmd === "seuil" || cmd === "ideale" || cmd === "ideal") {
     const n = Number(arg);
@@ -665,7 +707,16 @@ async function traiterMessage(env: Env, config: Config, msg: TgMessage): Promise
     return;
   }
 
-  // /start, /menu, /aide, /help ou n'importe quel autre message -> le menu à boutons.
+  // /start, /aide : on (ré)installe d'abord le clavier permanent, puis le menu.
+  if (cmd === "start" || cmd === "aide" || cmd === "help") {
+    await telegramEnvoyer(token, chatId,
+      "👋 Salut ! Les boutons ci-dessous restent affichés sous ton clavier :\n" +
+      `${BTN_METEO} · ${BTN_BULLETIN} · ${BTN_REGLAGES} · ${BTN_CARBURANT}\n` +
+      "Le bouton ☰ à côté du champ de saisie liste aussi toutes les commandes.",
+      clavierPermanent());
+  }
+
+  // /menu ou n'importe quel autre message -> le menu à boutons.
   await envoyerMenu(env, config, chatId);
 }
 
@@ -748,8 +799,15 @@ async function gererWebhook(request: Request, env: Env): Promise<Response> {
   // précédente (ex. sans les boutons), on les réenregistre au premier message reçu.
   const version = await env.ETAT_METEO.get(CLE_WEBHOOK_VERSION);
   if (version !== VERSION_WEBHOOK) {
-    try { await configurerWebhook(env, config.telegramToken, new URL(request.url).origin); }
-    catch (e) { console.warn("Remise à niveau webhook :", e instanceof Error ? e.message : e); }
+    try {
+      await configurerWebhook(env, config.telegramToken, new URL(request.url).origin);
+      // Le clavier permanent s'installe par un message : on le pose une fois ici,
+      // pour ne pas avoir à retaper /start après une mise à jour.
+      if (config.telegramChatId)
+        await telegramEnvoyer(config.telegramToken, config.telegramChatId,
+          "✨ Nouveau : des boutons permanents sous ton clavier, et la liste des commandes dans le bouton ☰.",
+          clavierPermanent());
+    } catch (e) { console.warn("Remise à niveau webhook :", e instanceof Error ? e.message : e); }
   }
 
   let update: TgUpdate;
