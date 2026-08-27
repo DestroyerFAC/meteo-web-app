@@ -63,7 +63,7 @@ interface TelegramUpdates {
 }
 
 // Champs Telegram utilisés par le webhook (sous-ensemble volontairement minimal).
-interface TgLocation { latitude?: number; longitude?: number }
+interface TgLocation { latitude?: number; longitude?: number; live_period?: number }
 interface TgMessage { chat?: { id?: number }; text?: string; location?: TgLocation }
 interface TgCallbackQuery { id: string; message?: { chat?: { id?: number }; message_id?: number }; data?: string }
 interface TgUpdate { message?: TgMessage; edited_message?: TgMessage; callback_query?: TgCallbackQuery }
@@ -609,18 +609,29 @@ async function appliquerModif(
 }
 
 /** Traite un message reçu du propriétaire (commande texte ou partage de position). */
-async function traiterMessage(env: Env, config: Config, msg: TgMessage): Promise<void> {
+async function traiterMessage(env: Env, config: Config, msg: TgMessage, silencieux = false): Promise<void> {
   const token = config.telegramToken;
   if (!token || typeof msg.chat?.id !== "number") return;
   const chatId = String(msg.chat.id);
   const { telegramToken, ...stockee } = config; // réglages persistables actuels
 
-  // 1) Partage de position (ponctuel ou « position en direct » via edited_message).
+  // 1) Partage de position. Une « position en direct » se prolonge ensuite en flux
+  //    de mises à jour (edited_message) pendant des heures : on applique en silence,
+  //    sinon le bot renotifie sans fin. On n'écrit que si le lieu a vraiment bougé,
+  //    pour ne pas consommer le quota d'écritures KV à chaque rafraîchissement.
   if (msg.location && estNombreFini(msg.location.latitude) && estNombreFini(msg.location.longitude)) {
     const lat = Math.round(msg.location.latitude * 1e4) / 1e4;
     const lon = Math.round(msg.location.longitude * 1e4) / 1e4;
+    if (silencieux) {
+      const aBouge = Math.abs(lat - stockee.latitude) > 0.005 || Math.abs(lon - stockee.longitude) > 0.005;
+      if (!aBouge) return; // ~500 m : déplacement négligeable, rien à réécrire
+      const v = validerConfig({ ...stockee, latitude: lat, longitude: lon });
+      if (v.ok) await ecrireConfig(env, v.valeur);
+      return; // suivi automatique : jamais de message
+    }
     await appliquerModif(env, token, chatId, stockee, { latitude: lat, longitude: lon },
-      `📍 C'est noté : je surveille maintenant la météo à ta nouvelle position (${lat.toFixed(3)}, ${lon.toFixed(3)}).`);
+      `📍 C'est noté : je surveille la météo à cette position (${lat.toFixed(3)}, ${lon.toFixed(3)}).` +
+      (msg.location.live_period ? "\nJe suivrai tes déplacements en silence, sans te renotifier." : ""));
     return;
   }
 
@@ -829,7 +840,8 @@ async function gererWebhook(request: Request, env: Env): Promise<Response> {
   // On n'accepte que le chat propriétaire (celui connecté). Les autres sont ignorés.
   if (!config.telegramChatId || String(msg.chat?.id) !== config.telegramChatId) return json({ ok: true });
 
-  try { await traiterMessage(env, config, msg); }
+  // Une mise à jour de position en direct arrive en edited_message : mode silencieux.
+  try { await traiterMessage(env, config, msg, Boolean(update.edited_message && !update.message)); }
   catch (e) { console.error("Webhook :", e instanceof Error ? e.message : e); }
   return json({ ok: true });
 }
