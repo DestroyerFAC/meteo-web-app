@@ -139,6 +139,12 @@ bot (Telegram : trombone → Position → *Partager ma position en direct*, 15 m
 à 8 h) : chaque mise à jour repositionne le lieu suivi. Un partage de position
 ponctuel le fixe une fois.
 
+Le bot confirme **une seule fois**, au partage initial. Les mises à jour
+suivantes (`edited_message`, envoyées en continu pendant toute la durée du
+partage) sont appliquées **en silence** : sans cela le bot renotifierait sans
+fin. Elles ne sont écrites en KV que si la position a bougé de plus de ~500 m,
+pour ne pas consommer le quota d'écritures.
+
 Côté technique : `/api/telegram/connect` lit le chat (getUpdates) puis enregistre
 un **webhook** (`setWebhook`) protégé par un jeton secret stocké en KV ; le worker
 ne traite que les messages venant du chat propriétaire.
